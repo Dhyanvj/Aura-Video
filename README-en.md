@@ -17,9 +17,9 @@
 Simply provide a <b>topic</b> or <b>keyword</b> for a video, and it will automatically generate the video copy, video
 materials, video subtitles, and video background music before synthesizing a high-definition short video.
 
-### WebUI
+### Content Studio Dashboard
 
-![](docs/webui-en.jpg)
+![](docs/dashboard.png)
 
 ### API Interface
 
@@ -86,10 +86,35 @@ materials, video subtitles, and video background music before synthesizing a hig
   </tr>
 </table>
 
+## AI Content Studio 🤖
+
+Alongside the original single-shot API, the project now ships an **autonomous, human-supervised** content studio:
+a pipeline of 6 AI agents that takes a video from **idea → script → render → QA → human approval → publish**,
+with a human only needed at the approval gates.
+
+| Agent | Responsibility |
+| --- | --- |
+| **Trend Scout** | Proposes 5-10 ranked topic ideas from your niche, audience, and YouTube/Google Trends signals, avoiding recently used topics |
+| **Creative Director** | Writes a hook-first script (≤60s), visual search terms ordered to match the narrative, and music/voice/subtitle direction |
+| **Producer** | Maps the creative brief onto the existing render pipeline (`app/services/task.py`) and reports per-stage progress |
+| **Quality Reviewer** | Deterministic ffprobe checks (duration, resolution, audio, subtitle alignment) plus a Claude vision pass over sampled frames — pass / revise / fail |
+| **Publisher** | Drafts titles/description/tags/per-platform captions and thumbnail candidates; **only publishes after a human clicks Approve**, via [Upload-Post](https://upload-post.com) |
+| **Performance Analyst** | Pulls YouTube view/like/comment counts 24h and 72h after publish and feeds a short insight back into the next Trend Scout run |
+
+The content studio dashboard (React, served by FastAPI on the same port — see the screenshot above) has a Pipeline
+Board (live Kanban), an Approval Queue (the only place that can trigger publishing), Trends, Analytics, and Settings.
+
+**Hard rule: no video is ever published automatically — a human must click Approve.**
+
+To use the agent pipeline, set `anthropic_api_key` under `[agents]` in `config.toml` (required). `youtube_api_key`
+under `[trends]` is optional (real trend data + post-publish analytics). Publishing requires the `upload_post_*` keys
+under `[app]` (see "Cross-Platform Publishing" below). Any agent missing its key degrades gracefully with a clear
+message in the dashboard rather than crashing the pipeline.
+
 ## Features 🎯
 
 - [x] Complete **MVC architecture**, **clearly structured** code, easy to maintain, supports both `API`
-      and `Web interface`
+      and the content studio **dashboard**
 - [x] Supports **AI-generated** video copy, as well as **customized copy**
 - [x] Supports various **high-definition video** sizes
   - [x] Portrait 9:16, `1080x1920`
@@ -288,9 +313,9 @@ uv run python cli.py \
 
 A list of all supported voices can be viewed here: [Voice List](./docs/voice-list.txt)
 
-The default TTS provider is **Edge TTS** (free, no API key required). In the WebUI it appears as **"Azure TTS V1"** — this is the same thing. To switch voices, set `voice_name` in `config.toml` or select one from the WebUI voice dropdown.
+The default TTS provider is **Edge TTS** (free, no API key required); in config it's labeled **"Azure TTS V1"** — this is the same thing. To switch voices, set `voice_name` in `config.toml`.
 
-> **Note:** "Azure TTS V1" (Edge TTS, free) and "Azure TTS V2" (paid Azure Speech SDK) are two different options in the WebUI. Only V2 requires an Azure API key.
+> **Note:** "Azure TTS V1" (Edge TTS, free) and "Azure TTS V2" (paid Azure Speech SDK) are two different options. Only V2 requires an Azure API key.
 
 To use higher-quality **Azure TTS V2** voices, configure your Azure Speech credentials in `config.toml`:
 

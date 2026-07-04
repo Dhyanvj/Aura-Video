@@ -17,9 +17,9 @@
 只需提供一个视频 <b>主题</b> 或 <b>关键词</b> ，就可以全自动生成视频文案、视频素材、视频字幕、视频背景音乐，然后合成一个高清的短视频。
 <br>
 
-<h4>Web界面</h4>
+<h4>内容工作室控制台</h4>
 
-![](docs/webui.jpg)
+![](docs/dashboard.png)
 
 <h4>API界面</h4>
 
@@ -86,9 +86,28 @@
   </tr>
 </table>
 
+## AI 内容工作室 🤖
+
+除了原有的单次生成 API，本项目现在还提供一套**自主运行、人工把关**的内容工作室：一个由 6 个 AI Agent 组成的流水线，把视频从 **选题 → 脚本 → 渲染 → 质检 → 人工审批 → 发布** 全程跑通，人类只需要在关键节点点头即可。
+
+| Agent | 职责 |
+| --- | --- |
+| **Trend Scout** | 基于赛道、受众、YouTube/Google Trends 信号，提出 5-10 个排序后的选题创意，并避免与近期已用选题重复 |
+| **Creative Director** | 撰写钩子先行的脚本（≤60秒）、按叙事顺序排列的画面关键词、配乐/配音/字幕风格建议 |
+| **Producer** | 把创意简报映射为现有渲染管线（`app/services/task.py`）的参数并驱动它，实时上报各阶段进度 |
+| **Quality Reviewer** | ffprobe 硬性技术检查（时长、分辨率、音频、字幕对齐）+ Claude 视觉抽帧审阅，给出 通过/需修改/不合格 结论 |
+| **Publisher** | 生成标题/描述/标签/各平台文案与缩略图候选图；**只有人工点击「批准」后才会真正发布**，通过 [Upload-Post](https://upload-post.com) 跨平台发布 |
+| **Performance Analyst** | 发布 24 小时/72 小时后拉取 YouTube 播放/点赞/评论数据，生成简短「哪些有效/哪些没效」洞察，反哺下一轮 Trend Scout |
+
+内容工作室控制台（React 前端，由 FastAPI 单端口统一提供，见上方截图）包含：Pipeline Board（看板，实时更新）、Approval Queue（审批队列，唯一能触发发布的地方）、Trends、Analytics、Settings。
+
+**硬性规则：任何视频在人工点击「批准」之前，绝不会自动发布。**
+
+启用 Agent 流水线需要在 `config.toml` 的 `[agents]` 中配置 `anthropic_api_key`（必需）；`[trends]` 的 `youtube_api_key` 为可选项，用于真实趋势数据和发布后数据追踪；发布功能需要在 `[app]` 中配置 `upload_post_*`（见下方"跨平台发布"功能说明）。未配置这些 key 时，相应 Agent 会优雅降级并在控制台给出明确提示，不会导致程序崩溃。
+
 ## 功能特性 🎯
 
-- [x] 完整的 **MVC架构**，代码 **结构清晰**，易于维护，支持 `API` 和 `Web界面`
+- [x] 完整的 **MVC架构**，代码 **结构清晰**，易于维护，支持 `API` 和内容工作室 **控制台**
 - [x] 支持视频文案 **AI自动生成**，也可以**自定义文案**
 - [x] 支持多种 **高清视频** 尺寸
   - [x] 竖屏 9:16，`1080x1920`
@@ -194,7 +213,7 @@
 git clone https://github.com/harry0703/MoneyPrinterTurbo.git
 ```
 
-#### ② 修改配置文件（可选，建议启动后也可以在 WebUI 里面配置）
+#### ② 修改配置文件（可选，启动后也可以在控制台的 Settings 页面配置部分选项）
 
 - 将 `config.example.toml` 文件复制一份，命名为 `config.toml`
 - 按照 `config.toml` 文件中的说明，配置好 `pexels_api_keys` 和 `llm_provider`，并根据 llm_provider 对应的服务商，配置相关的
@@ -293,9 +312,9 @@ uv run python cli.py \
 
 所有支持的声音列表，可以查看：[声音列表](./docs/voice-list.txt)
 
-默认 TTS 服务是 **Edge TTS**（免费，不需要 API Key）。在 WebUI 中它显示为 **“Azure TTS V1”**，两者指的是同一个免费服务。你可以在 `config.toml` 中设置 `voice_name`，也可以直接在 WebUI 的声音下拉框中选择。
+默认 TTS 服务是 **Edge TTS**（免费，不需要 API Key），配置项中显示为 **“Azure TTS V1”**，两者指的是同一个免费服务。你可以在 `config.toml` 中设置 `voice_name`。
 
-> **说明：** WebUI 中的 “Azure TTS V1”（Edge TTS，免费）和 “Azure TTS V2”（付费 Azure Speech SDK）是两个不同选项，只有 V2 需要配置 Azure API Key。
+> **说明：** “Azure TTS V1”（Edge TTS，免费）和 “Azure TTS V2”（付费 Azure Speech SDK）是两个不同选项，只有 V2 需要配置 Azure API Key。
 
 如果你希望使用质量更高的 **Azure TTS V2** 声音，需要在 `config.toml` 中配置 Azure Speech 凭据：
 
