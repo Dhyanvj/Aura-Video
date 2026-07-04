@@ -67,6 +67,42 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         self.assertEqual(project.status, ProjectStatus.FAILED.value)
         self.assertIn("anthropic_api_key", project.failure_reason)
 
+    def test_hallucinated_voice_recommendation_falls_back_instead_of_crashing_render(self):
+        # Regression test: a live run had the Creative Director return a
+        # free-text voice description (e.g. "a deep calm narrator voice")
+        # instead of a real TTS voice ID, which crashed the render almost
+        # immediately. _video_params_from_brief must substitute a valid
+        # fallback voice rather than pass the bad value through.
+        with session_scope() as session:
+            project = VideoProject(status=ProjectStatus.SCRIPTING.value, topic="t", niche="n")
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            project_id = project.id
+
+        bad_brief = CreativeBrief(
+            script="test",
+            search_terms=["a"],
+            music_direction="calm",
+            bgm_file=None,
+            voice_recommendation="Deep, calm male documentary voice (Morgan Freeman-style)",
+            subtitle_style="bottom",
+            metadata_draft=MetadataDraft(working_title="t", hook_variants=[]),
+        )
+
+        params = orchestrator._video_params_from_brief(project_id, "topic", bad_brief)
+
+        from sqlmodel import select
+
+        from app.services import voice as voice_service
+        from app.db.models import AgentEvent
+
+        self.assertIn(params.voice_name, set(voice_service.get_all_azure_voices()))
+
+        with session_scope() as session:
+            events = session.exec(select(AgentEvent).where(AgentEvent.project_id == project_id)).all()
+        self.assertTrue(any("invalid voice" in e.message for e in events))
+
     def test_full_pipeline_reaches_awaiting_human_approval_on_qa_pass(self):
         with patch.object(agent_base, "is_configured", return_value=True), patch(
             "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()

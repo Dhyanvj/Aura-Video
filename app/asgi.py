@@ -16,6 +16,7 @@ from app.config import config
 from app.db import init_db
 from app.models.exception import HttpException
 from app.router import root_api_router
+from app.services import singleton_lock
 from app.services.scheduler import start_scheduler, stop_scheduler
 from app.services.ws_manager import manager as ws_manager
 from app.utils import utils
@@ -99,6 +100,7 @@ app.mount("/", StaticFiles(directory=public_dir, html=True), name="")
 def shutdown_event():
     logger.info("shutdown event")
     stop_scheduler()
+    singleton_lock.release()
 
 
 @app.on_event("startup")
@@ -106,5 +108,15 @@ def startup_event():
     logger.info("startup event")
     ws_manager.set_loop(asyncio.get_event_loop())
     init_db()
+
+    # uvicorn runs this lifespan startup before it binds the listen socket, so
+    # a second `python main.py` on an already-used port would otherwise still
+    # resume in-flight projects and start the scheduler - racing real agent
+    # work against whatever instance is actually running - before failing to
+    # bind and exiting. Skip those side effects if another instance is alive.
+    if not singleton_lock.acquire():
+        logger.warning("startup side effects skipped (see error above); this process will likely fail to bind")
+        return
+
     resume_incomplete_projects()
     start_scheduler()

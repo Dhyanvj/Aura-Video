@@ -164,7 +164,30 @@ def _write_brief(project_id: int, topic: str, niche: str, revision_notes: Option
     return brief
 
 
-def _video_params_from_brief(topic: str, brief: CreativeBrief) -> VideoParams:
+_FALLBACK_VOICE = "en-US-AndrewNeural-Male"
+
+
+def _resolve_voice_name(project_id: int, brief: CreativeBrief) -> str:
+    # Defense in depth: even with the Creative Director now given a real voice
+    # list to pick from, validate before this reaches the render pipeline -
+    # a hallucinated voice name (e.g. a text description instead of a real
+    # TTS voice ID) would otherwise fail the render almost immediately.
+    from app.services import voice as voice_service
+
+    candidate = (brief.voice_recommendation or "").strip()
+    if candidate in set(voice_service.get_all_azure_voices()):
+        return candidate
+
+    fallback = config.ui.get("voice_name", "") or _FALLBACK_VOICE
+    _log_event(
+        project_id,
+        f"Creative Director recommended an invalid voice ({candidate!r}); falling back to {fallback!r}",
+        type_="error",
+    )
+    return fallback
+
+
+def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) -> VideoParams:
     return VideoParams(
         video_subject=topic,
         video_script=brief.script,
@@ -172,7 +195,7 @@ def _video_params_from_brief(topic: str, brief: CreativeBrief) -> VideoParams:
         match_materials_to_script=True,
         video_concat_mode=VideoConcatMode.sequential.value,
         video_aspect=VideoAspect.portrait.value,
-        voice_name=brief.voice_recommendation or config.ui.get("voice_name", ""),
+        voice_name=_resolve_voice_name(project_id, brief),
         bgm_type="random",
         bgm_file=brief.bgm_file or "",
     )
@@ -212,7 +235,7 @@ def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: 
         _log_event(project_id, "Creative Director produced a script and brief")
 
         _set_status(project_id, ProjectStatus.PRODUCING)
-        params = _video_params_from_brief(topic, brief)
+        params = _video_params_from_brief(project_id, topic, brief)
         producer = Producer(project_id)
         final_state = producer.run(params)
         _set_status(project_id, ProjectStatus.RENDERED)
