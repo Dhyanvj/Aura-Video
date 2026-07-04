@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, VideoProject
+from app.services.ws_manager import broadcast_event
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -91,6 +92,7 @@ class BaseAgent:
                     project.cost_usd = (project.cost_usd or 0.0) + cost_usd
                     session.add(project)
             session.commit()
+        broadcast_event(self.project_id, self.agent_name, type_, message)
 
     def call_json(
         self,

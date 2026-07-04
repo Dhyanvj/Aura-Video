@@ -1,3 +1,12 @@
+# Build the dashboard once, in its own stage, so the final image doesn't need
+# a Node.js runtime - only the static build output is copied over below.
+FROM node:20-slim AS frontend-build
+WORKDIR /frontend
+COPY frontend/package.json ./
+RUN npm install
+COPY frontend/ ./
+RUN npm run build
+
 # Use an official Python runtime as a parent image
 FROM python:3.11-slim-bullseye
 
@@ -70,6 +79,9 @@ RUN if [ "$PIP_USE_OFFICIAL" = "1" ]; then \
 
 # Now copy the rest of the codebase into the image
 COPY . .
+
+# Bring in the dashboard built in the frontend-build stage above.
+COPY --from=frontend-build /resource/public ./resource/public
 
 # Expose the port the app runs on (FastAPI serves the API and the dashboard on one port)
 EXPOSE 8080

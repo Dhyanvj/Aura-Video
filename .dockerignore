@@ -28,3 +28,8 @@ logs/
 
 storage/
 config.toml
+
+# Dashboard: built in its own stage in the Dockerfile; the final stage copies
+# the build output back in via COPY --from=frontend-build.
+frontend/node_modules/
+resource/public/

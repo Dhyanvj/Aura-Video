@@ -10,6 +10,7 @@ from app.models import const
 from app.models.schema import VideoParams
 from app.services import state as sm
 from app.services import task as task_service
+from app.services.ws_manager import broadcast_event
 from app.utils import utils
 
 # (progress_ceiling, stage label) — mirrors the checkpoints task.start() already
@@ -49,6 +50,7 @@ class Producer:
                 )
             )
             session.commit()
+        broadcast_event(self.project_id, self.agent_name, type_, message)
 
     def run(self, params: VideoParams) -> dict:
         """

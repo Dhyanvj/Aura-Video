@@ -15,6 +15,7 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ProjectStatus, VideoProject
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
+from app.services.ws_manager import broadcast_event, broadcast_status
 
 # Statuses a project can be resumed from on startup after a crash. Any project
 # still in one of these (and with a topic already picked) when the process
@@ -35,6 +36,7 @@ def _log_event(project_id: int, message: str, type_: str = "output") -> None:
     with session_scope() as session:
         session.add(AgentEvent(project_id=project_id, agent="orchestrator", type=type_, message=message))
         session.commit()
+    broadcast_event(project_id, "orchestrator", type_, message)
 
 
 def _set_status(project_id: int, status: ProjectStatus, **fields) -> None:
@@ -45,6 +47,7 @@ def _set_status(project_id: int, status: ProjectStatus, **fields) -> None:
             setattr(project, key, value)
         session.add(project)
         session.commit()
+    broadcast_status(project_id, status.value)
 
 
 def _max_revisions() -> int:
