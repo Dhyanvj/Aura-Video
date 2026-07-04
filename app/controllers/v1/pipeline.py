@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import Path, Request
 from pydantic import BaseModel
@@ -23,8 +23,13 @@ class CreateProjectRequest(BaseModel):
     audience: Optional[str] = ""
 
 
-class RetryProjectRequest(BaseModel):
+class RejectProjectRequest(BaseModel):
     revision_notes: str
+
+
+class ApproveProjectRequest(BaseModel):
+    platforms: List[str]
+    thumbnail_path: Optional[str] = None
 
 
 @router.post("/projects", summary="Start a new agent-driven video project")
@@ -39,14 +44,40 @@ def create_project(request: Request, body: CreateProjectRequest):
     return utils.get_response(200, {"project_id": project_id})
 
 
-@router.post("/projects/{project_id}/retry", summary="Reject with notes and trigger a revision")
-def retry_project(request: Request, body: RetryProjectRequest, project_id: int = Path(...)):
+@router.post("/projects/{project_id}/approve", summary="Approve a project and publish it to the given platforms")
+def approve_project(request: Request, body: ApproveProjectRequest, project_id: int = Path(...)):
+    if not body.platforms:
+        raise HttpException(task_id="", status_code=400, message="platforms must not be empty")
+    try:
+        orchestrator.approve_and_publish(project_id, body.platforms, body.thumbnail_path)
+    except ValueError as exc:
+        raise HttpException(task_id="", status_code=404, message=str(exc))
+    except PermissionError as exc:
+        raise HttpException(task_id="", status_code=409, message=str(exc))
+    except RuntimeError as exc:
+        raise HttpException(task_id="", status_code=400, message=str(exc))
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post("/projects/{project_id}/reject", summary="Request changes with notes, triggering a revision")
+def reject_project(request: Request, body: RejectProjectRequest, project_id: int = Path(...)):
     if not body.revision_notes.strip():
         raise HttpException(task_id="", status_code=400, message="revision_notes must not be empty")
     with session_scope() as session:
         if session.get(VideoProject, project_id) is None:
             raise HttpException(task_id="", status_code=404, message=f"project {project_id} not found")
     orchestrator.retry_with_revision(project_id, body.revision_notes.strip())
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post("/projects/{project_id}/retry", summary="Retry a failed project from scratch (no revision notes)")
+def retry_project(request: Request, project_id: int = Path(...)):
+    try:
+        orchestrator.retry_failed_project(project_id)
+    except ValueError as exc:
+        raise HttpException(task_id="", status_code=404, message=str(exc))
+    except PermissionError as exc:
+        raise HttpException(task_id="", status_code=409, message=str(exc))
     return utils.get_response(200, {"project_id": project_id})
 
 
@@ -81,6 +112,8 @@ def _project_summary(project: VideoProject) -> dict:
         "trend_report": project.trend_report,
         "brief": project.brief,
         "qa_reports": project.qa_reports,
+        "publish_package": project.publish_package,
+        "published_posts": project.published_posts,
         "task_id": project.task_id,
         "video_path": project.video_path,
         "cost_usd": project.cost_usd,

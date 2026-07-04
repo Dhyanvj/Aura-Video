@@ -1,5 +1,5 @@
 import threading
-from typing import Optional
+from typing import List, Optional
 
 from loguru import logger
 from sqlmodel import select
@@ -7,6 +7,7 @@ from sqlmodel import select
 from app.agents import base as agent_base
 from app.agents.creative_director import CreativeDirector
 from app.agents.producer import Producer
+from app.agents.publisher import Publisher
 from app.agents.quality_reviewer import QualityReviewer
 from app.agents.schemas import CreativeBrief, QAReport
 from app.agents.trend_scout import TrendScout
@@ -158,6 +159,17 @@ def _append_qa_report(project_id: int, report: QAReport) -> None:
         session.commit()
 
 
+def _prepare_publish_package(project_id: int, brief: CreativeBrief, video_path: str, niche: str) -> None:
+    publisher = Publisher(project_id)
+    hook_text = brief.metadata_draft.hook_variants[0] if brief.metadata_draft.hook_variants else brief.metadata_draft.working_title
+    package = publisher.prepare(script=brief.script, niche=niche, hook_text=hook_text, video_path=video_path)
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        project.publish_package = package
+        session.add(project)
+        session.commit()
+
+
 def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: Optional[str] = None) -> None:
     try:
         if not agent_base.is_configured():
@@ -188,8 +200,9 @@ def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: 
 
         if qa_report.overall == "pass":
             _set_status(project_id, ProjectStatus.QA_PASSED)
+            _prepare_publish_package(project_id, brief, video_path, niche)
             _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
-            _log_event(project_id, "QA passed, awaiting human approval")
+            _log_event(project_id, "QA passed, publish package prepared, awaiting human approval")
             return
 
         if qa_report.overall == "fail":
@@ -260,6 +273,82 @@ def retry_with_revision(project_id: int, revision_notes: str) -> None:
     thread = threading.Thread(
         target=_run_pipeline, args=(project_id, topic, niche, revision_notes), daemon=True
     )
+    thread.start()
+
+
+def approve_and_publish(project_id: int, platforms: List[str], thumbnail_path: Optional[str] = None) -> None:
+    """
+    The mandatory human approval gate. Publishing is only ever triggered from
+    here, and only when the project is actually awaiting approval - this is
+    the one and only path that calls Publisher.publish().
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise ValueError(f"project {project_id} not found")
+        if project.status != ProjectStatus.AWAITING_HUMAN_APPROVAL.value:
+            raise PermissionError(
+                f"project {project_id} is not awaiting approval (status={project.status}); refusing to publish"
+            )
+        video_path = project.video_path
+        package = project.publish_package
+
+    if not video_path or not package:
+        raise RuntimeError(f"project {project_id} has no rendered video or publish package to publish")
+
+    _set_status(project_id, ProjectStatus.APPROVED)
+    _log_event(project_id, f"Approved for platforms: {', '.join(platforms)}")
+    thread = threading.Thread(
+        target=_run_publish, args=(project_id, video_path, package, platforms, thumbnail_path), daemon=True
+    )
+    thread.start()
+
+
+def _run_publish(
+    project_id: int, video_path: str, package: dict, platforms: List[str], thumbnail_path: Optional[str]
+) -> None:
+    try:
+        _set_status(project_id, ProjectStatus.PUBLISHING)
+        publisher = Publisher(project_id)
+        results = publisher.publish(
+            video_path=video_path, package=package, platforms=platforms, thumbnail_path=thumbnail_path
+        )
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            project.published_posts = results
+            session.add(project)
+            session.commit()
+
+        if all(r.get("success") for r in results):
+            _set_status(project_id, ProjectStatus.PUBLISHED)
+            _log_event(project_id, "Published successfully")
+        else:
+            _set_status(project_id, ProjectStatus.FAILED, failure_reason=f"publish failed: {results}")
+            _log_event(project_id, f"Publish failed: {results}", type_="error")
+    except Exception as exc:  # noqa: BLE001 - surface any publish failure on the project
+        logger.exception(f"project {project_id} publish failed")
+        _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
+        _log_event(project_id, f"Publish failed: {exc}", type_="error")
+
+
+def retry_failed_project(project_id: int) -> None:
+    """
+    Plain retry with no revision notes, for infra-type failures (e.g. a
+    transient render error) rather than content feedback. Does not consume a
+    revision slot.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise ValueError(f"project {project_id} not found")
+        if project.status != ProjectStatus.FAILED.value:
+            raise PermissionError(f"project {project_id} is not FAILED (status={project.status})")
+        topic = project.topic
+        niche = project.niche or ""
+
+    _set_status(project_id, ProjectStatus.SCRIPTING, failure_reason=None)
+    _log_event(project_id, "Retrying after failure")
+    thread = threading.Thread(target=_run_pipeline, args=(project_id, topic or "", niche), daemon=True)
     thread.start()
 
 

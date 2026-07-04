@@ -60,3 +60,19 @@ class QAReport(BaseModel):
     content_policy_flags: List[str] = Field(default_factory=list)
     revision_target: Optional[str] = None
     revision_notes: Optional[str] = None
+
+
+class PlatformVariant(BaseModel):
+    platform: str  # youtube_shorts | instagram_reels | tiktok
+    caption: str
+    hashtags: List[str] = Field(default_factory=list)
+
+
+class PublishPackage(BaseModel):
+    title_options: List[str] = Field(min_length=3, max_length=3)
+    description: str
+    tags: List[str] = Field(min_length=10, max_length=15)
+    category: str
+    platform_variants: List[PlatformVariant]
+    suggested_posting_time: str
+    content_policy_flags: List[str] = Field(default_factory=list)

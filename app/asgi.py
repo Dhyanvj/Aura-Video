@@ -14,6 +14,7 @@ from app.config import config
 from app.db import init_db
 from app.models.exception import HttpException
 from app.router import root_api_router
+from app.services.scheduler import start_scheduler, stop_scheduler
 from app.utils import utils
 
 
@@ -77,6 +78,7 @@ app.mount("/", StaticFiles(directory=public_dir, html=True), name="")
 @app.on_event("shutdown")
 def shutdown_event():
     logger.info("shutdown event")
+    stop_scheduler()
 
 
 @app.on_event("startup")
@@ -84,3 +86,4 @@ def startup_event():
     logger.info("startup event")
     init_db()
     resume_incomplete_projects()
+    start_scheduler()
