@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from sqlmodel import select
 
 from app.agents import orchestrator
+from app.config import config
 from app.controllers.v1.base import new_router
 from app.db import session_scope
 from app.db.models import AgentEvent, VideoProject
@@ -15,15 +16,37 @@ router = new_router()
 
 
 class CreateProjectRequest(BaseModel):
-    topic: str
+    # Leave topic empty to have the Trend Scout pick one automatically for
+    # niche/audience (falling back to the configured defaults in [trends]).
+    topic: Optional[str] = ""
     niche: Optional[str] = ""
+    audience: Optional[str] = ""
 
 
-@router.post("/projects", summary="Start a new agent-driven video project from a manual topic")
+class RetryProjectRequest(BaseModel):
+    revision_notes: str
+
+
+@router.post("/projects", summary="Start a new agent-driven video project")
 def create_project(request: Request, body: CreateProjectRequest):
-    if not body.topic.strip():
-        raise HttpException(task_id="", status_code=400, message="topic must not be empty")
-    project_id = orchestrator.start_manual_project(topic=body.topic.strip(), niche=(body.niche or "").strip())
+    topic = (body.topic or "").strip()
+    niche = (body.niche or "").strip() or config.trends.get("niche", "")
+    if topic:
+        project_id = orchestrator.start_manual_project(topic=topic, niche=niche)
+    else:
+        audience = (body.audience or "").strip() or config.trends.get("audience", "")
+        project_id = orchestrator.start_auto_trend_project(niche=niche, audience=audience)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post("/projects/{project_id}/retry", summary="Reject with notes and trigger a revision")
+def retry_project(request: Request, body: RetryProjectRequest, project_id: int = Path(...)):
+    if not body.revision_notes.strip():
+        raise HttpException(task_id="", status_code=400, message="revision_notes must not be empty")
+    with session_scope() as session:
+        if session.get(VideoProject, project_id) is None:
+            raise HttpException(task_id="", status_code=404, message=f"project {project_id} not found")
+    orchestrator.retry_with_revision(project_id, body.revision_notes.strip())
     return utils.get_response(200, {"project_id": project_id})
 
 
@@ -55,6 +78,8 @@ def _project_summary(project: VideoProject) -> dict:
         "status": project.status,
         "niche": project.niche,
         "topic": project.topic,
+        "trend_report": project.trend_report,
+        "brief": project.brief,
         "task_id": project.task_id,
         "video_path": project.video_path,
         "cost_usd": project.cost_usd,

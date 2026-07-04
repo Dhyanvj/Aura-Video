@@ -1,17 +1,27 @@
 import threading
+from typing import Optional
 
 from loguru import logger
 from sqlmodel import select
 
+from app.agents import base as agent_base
+from app.agents.creative_director import CreativeDirector
 from app.agents.producer import Producer
+from app.agents.schemas import CreativeBrief
+from app.agents.trend_scout import TrendScout
 from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ProjectStatus, VideoProject
-from app.models.schema import VideoAspect, VideoParams
+from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
 
 # Statuses a project can be resumed from on startup after a crash. Any project
 # still in one of these when the process starts was interrupted mid-pipeline.
-_RESUMABLE_STATUSES = {ProjectStatus.SCRIPTING.value, ProjectStatus.PRODUCING.value}
+_RESUMABLE_STATUSES = {
+    ProjectStatus.IDEA_READY.value,
+    ProjectStatus.SCRIPTING.value,
+    ProjectStatus.PRODUCING.value,
+}
+_RECENT_TOPICS_LIMIT = 30
 
 
 def _log_event(project_id: int, message: str, type_: str = "output") -> None:
@@ -30,15 +40,20 @@ def _set_status(project_id: int, status: ProjectStatus, **fields) -> None:
         session.commit()
 
 
-def _build_manual_video_params(topic: str) -> VideoParams:
-    # M2: no Creative Director yet, so the script/terms are left blank and the
-    # existing legacy pipeline (app/services/llm.generate_script/generate_terms)
-    # fills them in, same as a direct API call to POST /videos would.
-    return VideoParams(
-        video_subject=topic,
-        voice_name=config.ui.get("voice_name", ""),
-        video_aspect=VideoAspect.portrait.value,
-    )
+def _max_revisions() -> int:
+    return int(config.agents.get("max_revisions", 2))
+
+
+def _recent_topics() -> list[str]:
+    # Trend Scout must not repropose a topic used in the last 30 projects.
+    with session_scope() as session:
+        rows = session.exec(
+            select(VideoProject.topic)
+            .where(VideoProject.topic.is_not(None))
+            .order_by(VideoProject.created_at.desc())
+            .limit(_RECENT_TOPICS_LIMIT)
+        ).all()
+    return [t for t in rows if t]
 
 
 def start_manual_project(topic: str, niche: str = "") -> int:
@@ -48,23 +63,102 @@ def start_manual_project(topic: str, niche: str = "") -> int:
     immediately with the new project's id.
     """
     with session_scope() as session:
-        project = VideoProject(status=ProjectStatus.PRODUCING.value, niche=niche, topic=topic)
+        project = VideoProject(status=ProjectStatus.SCRIPTING.value, niche=niche, topic=topic)
         session.add(project)
         session.commit()
         session.refresh(project)
         project_id = project.id
 
     _log_event(project_id, f"Manual topic accepted: {topic!r}")
-    thread = threading.Thread(target=_run_pipeline, args=(project_id, topic), daemon=True)
+    thread = threading.Thread(target=_run_pipeline, args=(project_id, topic, niche), daemon=True)
     thread.start()
     return project_id
 
 
-def _run_pipeline(project_id: int, topic: str) -> None:
+def start_auto_trend_project(niche: str, audience: str) -> int:
+    """
+    Creates a project with no human-supplied topic: the Trend Scout proposes
+    ideas and the top-scoring one (excluding recently used topics) is picked
+    automatically. Returns immediately with the new project's id.
+    """
+    with session_scope() as session:
+        project = VideoProject(status=ProjectStatus.IDEA_PENDING.value, niche=niche)
+        session.add(project)
+        session.commit()
+        session.refresh(project)
+        project_id = project.id
+
+    thread = threading.Thread(target=_run_auto_trend_pipeline, args=(project_id, niche, audience), daemon=True)
+    thread.start()
+    return project_id
+
+
+def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None:
     try:
-        params = _build_manual_video_params(topic)
+        if not agent_base.is_configured():
+            raise agent_base.AgentNotConfiguredError(
+                "agents.anthropic_api_key is not configured; cannot run the Trend Scout"
+            )
+        scout = TrendScout(project_id)
+        report = scout.scout(niche=niche, audience=audience, recent_topics=_recent_topics())
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            project.trend_report = report.model_dump()
+            session.add(project)
+            session.commit()
+
+        best = max(report.ideas, key=lambda idea: idea.opportunity_score)
+        _log_event(project_id, f"Trend Scout picked {best.title!r} (opportunity score {best.opportunity_score})")
+        _set_status(project_id, ProjectStatus.IDEA_READY, topic=best.title)
+        _run_pipeline(project_id, best.title, niche)
+    except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
+        logger.exception(f"project {project_id} trend scouting failed")
+        _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
+        _log_event(project_id, f"Trend scouting failed: {exc}", type_="error")
+
+
+def _write_brief(project_id: int, topic: str, niche: str, revision_notes: Optional[str]) -> CreativeBrief:
+    director = CreativeDirector(project_id)
+    brief = director.write(topic=topic, niche=niche, revision_notes=revision_notes)
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        project.brief = brief.model_dump()
+        session.add(project)
+        session.commit()
+    return brief
+
+
+def _video_params_from_brief(topic: str, brief: CreativeBrief) -> VideoParams:
+    return VideoParams(
+        video_subject=topic,
+        video_script=brief.script,
+        video_terms=brief.search_terms,
+        match_materials_to_script=True,
+        video_concat_mode=VideoConcatMode.sequential.value,
+        video_aspect=VideoAspect.portrait.value,
+        voice_name=brief.voice_recommendation or config.ui.get("voice_name", ""),
+        bgm_type="random",
+        bgm_file=brief.bgm_file or "",
+    )
+
+
+def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: Optional[str] = None) -> None:
+    try:
+        if not agent_base.is_configured():
+            raise agent_base.AgentNotConfiguredError(
+                "agents.anthropic_api_key is not configured; cannot run the Creative Director"
+            )
+
+        _set_status(project_id, ProjectStatus.SCRIPTING, topic=topic)
+        brief = _write_brief(project_id, topic, niche, revision_notes)
+        _set_status(project_id, ProjectStatus.SCRIPT_READY)
+        _log_event(project_id, "Creative Director produced a script and brief")
+
+        _set_status(project_id, ProjectStatus.PRODUCING)
+        params = _video_params_from_brief(topic, brief)
         producer = Producer(project_id)
         producer.run(params)
+
         # QA (M4) and Publisher (M5) are not wired in yet, so a rendered video
         # goes straight to the human-approval gate.
         _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
@@ -75,6 +169,38 @@ def _run_pipeline(project_id: int, topic: str) -> None:
         _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
 
 
+def retry_with_revision(project_id: int, revision_notes: str) -> None:
+    """
+    Reject-with-notes: reruns the Creative Director with feedback and
+    re-produces the video. Enforces max_revisions from config.toml - beyond
+    that, the project is left FAILED with a note so a human can take over,
+    per the hard cap on automatic revision loops.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise ValueError(f"project {project_id} not found")
+        topic = project.topic
+        niche = project.niche or ""
+        revision_count = project.revision_count
+
+    if revision_count >= _max_revisions():
+        _set_status(
+            project_id,
+            ProjectStatus.FAILED,
+            failure_reason=f"revision limit ({_max_revisions()}) reached; escalated for human review",
+        )
+        _log_event(project_id, "Revision limit reached, escalating to human", type_="error")
+        return
+
+    _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=revision_count + 1)
+    _log_event(project_id, f"Revision {revision_count + 1}/{_max_revisions()} requested: {revision_notes}")
+    thread = threading.Thread(
+        target=_run_pipeline, args=(project_id, topic, niche, revision_notes), daemon=True
+    )
+    thread.start()
+
+
 def resume_incomplete_projects() -> None:
     """
     Called at startup. Any project left in an in-flight status when the
@@ -83,10 +209,10 @@ def resume_incomplete_projects() -> None:
     """
     with session_scope() as session:
         stuck = session.exec(select(VideoProject).where(VideoProject.status.in_(_RESUMABLE_STATUSES))).all()
-        stuck_ids_topics = [(p.id, p.topic) for p in stuck]
+        stuck_ids_topics = [(p.id, p.topic, p.niche) for p in stuck]
 
-    for project_id, topic in stuck_ids_topics:
+    for project_id, topic, niche in stuck_ids_topics:
         logger.info(f"resuming interrupted project {project_id}")
         _log_event(project_id, "Resuming after restart")
-        thread = threading.Thread(target=_run_pipeline, args=(project_id, topic or ""), daemon=True)
+        thread = threading.Thread(target=_run_pipeline, args=(project_id, topic or "", niche or ""), daemon=True)
         thread.start()
