@@ -8,7 +8,7 @@ from loguru import logger
 from app.config import config
 from app.models import const
 from app.models.schema import VideoConcatMode, VideoParams
-from app.services import llm, material, subtitle, twelvelabs, video, voice, upload_post
+from app.services import llm, material, subtitle, twelvelabs, video, voice
 from app.services import state as sm
 from app.utils import file_security, utils
 
@@ -437,40 +437,8 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         f"task {task_id} finished, generated {len(final_video_paths)} videos."
     )
 
-    # 7. Cross-post to social platforms (if enabled)
-    cross_post_results = []
-    if upload_post.upload_post_service.is_configured() and upload_post.upload_post_service.auto_upload:
-        platforms = upload_post.upload_post_service.platforms
-        logger.info(f"\n\n## cross-posting videos to {', '.join(platforms)}")
-
-        youtube_extra = None
-        if any(p.startswith("youtube") for p in platforms):
-            metadata = llm.generate_social_metadata(
-                video_subject=params.video_subject,
-                video_script=video_script,
-                language=params.video_language or "",
-                platform="youtube_shorts",
-            )
-            youtube_extra = {
-                "youtube_title": metadata.get("title", params.video_subject),
-                "youtube_description": metadata.get("caption", ""),
-                "tags": metadata.get("hashtags", []),
-                "privacyStatus": upload_post.upload_post_service.youtube_privacy_status,
-                "containsSyntheticMedia": True,
-            }
-
-        for video_path in final_video_paths:
-            result = upload_post.cross_post_video(
-                video_path=video_path,
-                title=params.video_subject or "Check out this video! #shorts #viral",
-                youtube_extra=youtube_extra,
-            )
-            cross_post_results.append(result)
-            if result.get('success'):
-                logger.info(f"✅ Cross-posted: {video_path}")
-            else:
-                logger.warning(f"⚠️ Failed to cross-post: {video_path} - {result.get('error', 'Unknown error')}")
-
+    # Publishing to social platforms never happens here. It is handled exclusively
+    # by the Publisher agent after the mandatory human approval gate (see app/agents).
     kwargs = {
         "videos": final_video_paths,
         "combined_videos": combined_video_paths,
@@ -480,7 +448,6 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         "audio_duration": audio_duration,
         "subtitle_path": subtitle_path,
         "materials": downloaded_videos,
-        "cross_post_results": cross_post_results if cross_post_results else None,
     }
     sm.state.update_task(
         task_id, state=const.TASK_STATE_COMPLETE, progress=100, **kwargs

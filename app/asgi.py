@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
 from app.config import config
+from app.db import init_db
 from app.models.exception import HttpException
 from app.router import root_api_router
 from app.utils import utils
@@ -80,3 +81,4 @@ def shutdown_event():
 @app.on_event("startup")
 def startup_event():
     logger.info("startup event")
+    init_db()

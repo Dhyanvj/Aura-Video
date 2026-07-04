@@ -1,6 +1,5 @@
 # Keep legacy pip install support; primary deps moved to pyproject.toml / uv.lock.
 moviepy==2.2.1
-streamlit==1.58.0
 edge_tts==7.2.7
 fastapi==0.136.3
 uvicorn==0.32.1
@@ -17,6 +16,12 @@ requests==2.33.1
 socksio==1.0.0
 pydub==0.25.1
 litellm==1.86.2
+anthropic==0.69.0
+sqlmodel==0.0.24
+apscheduler==3.11.0
+pillow==11.0.0
+pytrends==4.9.2
+toml==0.10.2
 
 # Optional unofficial g4f provider is intentionally not installed by default.
 # Use `uv sync --extra g4f` only when you explicitly accept that provider risk.

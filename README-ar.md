@@ -213,37 +213,9 @@ sudo apt-get install imagemagick
 sudo yum install ImageMagick
 ```
 
-#### ③ تشغيل واجهة الويب 🌐
+#### ③ تشغيل الخدمة 🌐
 
-لاحظ أنك بحاجة لتنفيذ الأوامر التالية في `المجلد الجذر` لمشروع MoneyPrinterTurbo
-
-###### Windows
-
-```shell
-uv run streamlit run ./webui/Main.py --browser.gatherUsageStats=False --server.showEmailPrompt=False
-```
-
-إذا كنت قد فعّلت البيئة الافتراضية يدوياً، فما زال بإمكانك تشغيل:
-
-```bat
-webui.bat
-```
-
-###### MacOS أو Linux
-
-```shell
-uv run streamlit run ./webui/Main.py --browser.gatherUsageStats=False --server.showEmailPrompt=False
-```
-
-إذا كنت قد فعّلت البيئة الافتراضية يدوياً، فما زال بإمكانك تشغيل:
-
-```shell
-sh webui.sh
-```
-
-بعد التشغيل، سيُفتح المتصفح تلقائياً
-
-#### ④ تشغيل خدمة الـ API 🚀
+لاحظ أنك بحاجة لتنفيذ الأوامر التالية في `المجلد الجذر` لمشروع MoneyPrinterTurbo. يوفر FastAPI الـ API ولوحة التحكم (Kanban، قائمة الموافقات، إلخ) على نفس المنفذ.
 
 ```shell
 uv run python main.py

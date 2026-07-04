@@ -71,17 +71,17 @@ RUN if [ "$PIP_USE_OFFICIAL" = "1" ]; then \
 # Now copy the rest of the codebase into the image
 COPY . .
 
-# Expose the port the app runs on
-EXPOSE 8501
+# Expose the port the app runs on (FastAPI serves the API and the dashboard on one port)
+EXPOSE 8080
 
 # Command to run the application
-CMD ["streamlit", "run", "./webui/Main.py","--browser.serverAddress=127.0.0.1","--server.enableCORS=True","--browser.gatherUsageStats=False","--server.showEmailPrompt=False"]
+CMD ["python3", "main.py"]
 
 # 1. Build the Docker image using the following command
 # docker build -t moneyprinterturbo .
 
 # 2. Run the Docker container using the following command
 ## For Linux or MacOS:
-# docker run -v $(pwd)/config.toml:/MoneyPrinterTurbo/config.toml -v $(pwd)/storage:/MoneyPrinterTurbo/storage -p 127.0.0.1:8501:8501 moneyprinterturbo
+# docker run -v $(pwd)/config.toml:/MoneyPrinterTurbo/config.toml -v $(pwd)/storage:/MoneyPrinterTurbo/storage -p 127.0.0.1:8080:8080 moneyprinterturbo
 ## For Windows:
-# docker run -v ${PWD}/config.toml:/MoneyPrinterTurbo/config.toml -v ${PWD}/storage:/MoneyPrinterTurbo/storage -p 127.0.0.1:8501:8501 moneyprinterturbo
+# docker run -v ${PWD}/config.toml:/MoneyPrinterTurbo/config.toml -v ${PWD}/storage:/MoneyPrinterTurbo/storage -p 127.0.0.1:8080:8080 moneyprinterturbo

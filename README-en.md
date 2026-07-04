@@ -221,13 +221,9 @@ docker compose -f docker-compose.release.yml up
 > If you need to build the image locally, you can still run `docker compose up`.
 > Before the first start, make sure `config.toml` exists in the project root. You can copy it from `config.example.toml`.
 
-#### ② Access the Web Interface
+#### ② Access the Dashboard / API
 
-Open your browser and visit http://127.0.0.1:8501
-
-#### ③ Access the API Interface
-
-Open your browser and visit http://127.0.0.1:8080/docs or http://127.0.0.1:8080/redoc
+Open your browser and visit http://127.0.0.1:8080 for the content studio dashboard, or http://127.0.0.1:8080/docs / http://127.0.0.1:8080/redoc for the API docs.
 
 ### Manual Deployment 📦
 
@@ -256,35 +252,9 @@ Notes:
 - `uv.lock` pins the resolved environment, so `uv sync --frozen` is recommended by default.
 - `requirements.txt` is kept only for legacy `pip`-based installation.
 
-#### ② Launch the Web Interface 🌐
+#### ② Launch the Service 🌐
 
-Note that you need to execute the following commands in the `root directory` of the MoneyPrinterTurbo project
-
-###### Windows
-
-```powershell
-.\webui.bat
-```
-
-You can also run `webui.bat` in CMD.
-`webui.bat` prefers the project `.venv` or bundled Python from the portable package. If no project Python is found but `uv` is installed, it automatically falls back to `uv run streamlit`.
-To allow other devices on your LAN to access the WebUI, run `set MPT_WEBUI_HOST=0.0.0.0` before running `webui.bat`.
-
-###### MacOS or Linux
-
-```shell
-uv run streamlit run ./webui/Main.py --browser.gatherUsageStats=False --server.showEmailPrompt=False
-```
-
-If you have already activated the virtual environment manually, you can still run:
-
-```shell
-sh webui.sh
-```
-
-After launching, the browser will open automatically
-
-#### ③ Launch the API Service 🚀
+Note that you need to execute the following commands in the `root directory` of the MoneyPrinterTurbo project. FastAPI serves both the API and the content studio dashboard (Kanban board, approval queue, etc.) on the same port.
 
 ```shell
 uv run python main.py
@@ -296,7 +266,7 @@ If you have already activated the virtual environment manually, you can still ru
 python main.py
 ```
 
-#### ④ Pure CLI Mode (No Browser) ⌨️
+#### ③ Pure CLI Mode (No Browser) ⌨️
 
 If you cannot use a browser or port forwarding, you can generate videos directly from the command line:
 

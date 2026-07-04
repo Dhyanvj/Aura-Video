@@ -426,7 +426,9 @@ upload_post_username = ""
 # Platforms to cross-post to (options: "tiktok", "instagram", "youtube")
 upload_post_platforms = ["tiktok", "instagram"]
 
-# Automatically cross-post videos after generation (if false, you'll need to call the API manually)
+# Deprecated / no longer read by the pipeline: publishing now happens exclusively
+# through the Publisher agent after a human clicks Approve in the dashboard
+# (see [agents] below). Kept here only so old config files don't fail to parse.
 upload_post_auto_upload = false
 
 # YouTube Shorts privacy status (options: "public", "unlisted", "private")
@@ -448,3 +450,40 @@ api_key = ""
 model_id = "chatterbox"
 # Voices exposed by your server; shown in the WebUI dropdown as chatterbox:<name>
 voices = ["default-Female"]
+
+########## Agentic content studio #########################################
+# Configuration for the AI agent pipeline (Trend Scout, Creative Director,
+# Producer, Quality Reviewer, Publisher, Performance Analyst). See app/agents/.
+[agents]
+# Required for all agents. Get your key at https://console.anthropic.com
+anthropic_api_key = ""
+
+# Anthropic model used for all agent LLM calls.
+model = "claude-sonnet-5"
+
+# Maximum number of automatic revision loops per pipeline stage before a
+# project is escalated to the human with the QA/revision report attached.
+max_revisions = 2
+
+# "manual": human approves topic, script, and final video.
+# "semi":   human approves only the final video + metadata (topic/script run automatically).
+# Final-video approval can never be disabled, regardless of this setting.
+autopilot_level = "semi"
+
+[trends]
+# Optional. Enables real trend data (mostPopular + search) via YouTube Data API v3,
+# and unlocks the Performance Analyst's view/like/comment tracking after publish.
+# Get a key at https://console.cloud.google.com (enable "YouTube Data API v3").
+youtube_api_key = ""
+
+# Default niche and audience used by the Trend Scout when a project isn't
+# started from a manual topic. Editable from the Settings page.
+niche = "e.g. space facts"
+audience = "e.g. curious 18-34 year olds"
+
+[schedule]
+# When enabled, the scheduler creates new projects automatically and runs them
+# to the human approval gate at the configured time.
+enabled = false
+videos_per_day = 1
+run_at = "09:00"

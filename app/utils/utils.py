@@ -1,9 +1,7 @@
 import json
-import locale
 import os
 import re
 import shutil
-from functools import lru_cache
 from pathlib import Path
 import threading
 from typing import Any
@@ -282,29 +280,6 @@ def md5(text):
     return hashlib.md5(text.encode("utf-8")).hexdigest()
 
 
-def get_system_locale():
-    try:
-        loc = locale.getdefaultlocale()
-        # zh_CN, zh_TW return zh
-        # en_US, en_GB return en
-        language_code = loc[0].split("_")[0]
-        return language_code
-    except Exception:
-        return "en"
-
-
-@lru_cache(maxsize=None)
-def load_locales(i18n_dir):
-    # WebUI 每次交互都会触发 Streamlit 重新执行脚本，语言文件运行期不会变化，
-    # 因此缓存解析结果，避免反复读取和解析所有 i18n JSON 文件。
-    _locales = {}
-    for root, dirs, files in os.walk(i18n_dir):
-        for file in files:
-            if file.endswith(".json"):
-                lang = file.split(".")[0]
-                with open(os.path.join(root, file), "r", encoding="utf-8") as f:
-                    _locales[lang] = json.loads(f.read())
-    return _locales
 
 
 def parse_extension(filename):

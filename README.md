@@ -221,13 +221,9 @@ docker compose -f docker-compose.release.yml up
 > 如果你需要本地重新构建镜像，可以继续使用 `docker compose up`。
 > 注意：首次启动前请确保项目根目录下存在 `config.toml`，可以从 `config.example.toml` 复制一份。
 
-#### ② 访问Web界面
+#### ② 访问控制台 / API 文档
 
-打开浏览器，访问 http://127.0.0.1:8501
-
-#### ③ 访问API文档
-
-打开浏览器，访问 http://127.0.0.1:8080/docs 或者 http://127.0.0.1:8080/redoc
+打开浏览器，访问 http://127.0.0.1:8080 查看内容工作室控制台，或访问 http://127.0.0.1:8080/docs 、http://127.0.0.1:8080/redoc 查看 API 文档。
 
 ### 手动部署 📦
 
@@ -261,35 +257,9 @@ pip install -r requirements.txt
 - `uv.lock` 是锁文件，建议默认执行 `uv sync --frozen`
 - `requirements.txt` 仅保留给旧的 `pip` 安装方式兼容使用
 
-#### ② 启动Web界面 🌐
+#### ② 启动服务 🌐
 
-注意需要到 MoneyPrinterTurbo 项目 `根目录` 下执行以下命令
-
-###### Windows
-
-```powershell
-.\webui.bat
-```
-
-在 CMD 中也可以执行 `webui.bat`。
-`webui.bat` 会优先使用项目 `.venv` 或一键包内置 Python；如果没有找到项目 Python，但已安装 `uv`，会自动切换为 `uv run streamlit`。
-如需允许局域网内其他设备访问 WebUI，可以先执行 `set MPT_WEBUI_HOST=0.0.0.0`，再运行 `webui.bat`。
-
-###### MacOS or Linux
-
-```shell
-uv run streamlit run ./webui/Main.py --browser.gatherUsageStats=False --server.showEmailPrompt=False
-```
-
-如果你已经手动激活了虚拟环境，也可以直接执行：
-
-```shell
-sh webui.sh
-```
-
-启动后，会自动打开浏览器（如果打开是空白，建议换成 **Chrome** 或者 **Edge** 打开）
-
-#### ③ 启动API服务 🚀
+注意需要到 MoneyPrinterTurbo 项目 `根目录` 下执行以下命令。FastAPI 会在同一个端口同时提供 API 和内容工作室控制台（Kanban 面板、审批队列等）。
 
 ```shell
 uv run python main.py
@@ -301,7 +271,7 @@ uv run python main.py
 python main.py
 ```
 
-#### ④ 纯命令行方式（无浏览器）⌨️
+#### ③ 纯命令行方式（无浏览器）⌨️
 
 如果你无法使用浏览器或端口转发，可以直接在命令行生成视频：
 
