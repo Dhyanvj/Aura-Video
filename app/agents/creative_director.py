@@ -1,17 +1,15 @@
 import os
-from typing import Optional
+from typing import List, Optional
 
 from app.agents.base import BaseAgent
-from app.agents.schemas import CreativeBrief
+from app.agents.schemas import CreativeBrief, SearchTermsRevision
 from app.services import voice as voice_service
 from app.utils import utils
 
-_SYSTEM_PROMPT = """You are the Creative Director for a short-form vertical video channel.
-Write a hook-first script, at most 60 seconds spoken aloud (about 140-160 words),
-optimized for retention: an open loop or bold claim in the first 2 seconds, and a
-payoff plus a short call-to-action at the end.
-
-Provide 6-10 visual search terms, ordered to match the script's narrative order (each
+# Shared between the initial script/terms pass and revise_search_terms() so a
+# targeted revision gets the exact same term-quality guidance as the original
+# draft, not a weaker ad-hoc version of it.
+_SEARCH_TERM_GUIDANCE = """Provide 6-10 visual search terms, ordered to match the script's narrative order (each
 term should correspond to what's being said around that point in the video) - this
 feeds a "match materials to script" pipeline that downloads and places clips
 sequentially, so order matters.
@@ -34,6 +32,21 @@ avoid that:
   colorful liquid/capsule photography). Anchor every term to the actual subject:
   "octopus with blue-tinted skin close-up", not "blue liquid macro".
 - Prefer the subject's name literally present in most terms rather than implied.
+- Be specific about species/variant when it matters to accuracy (e.g. "humpback
+  whale breaching ocean" rather than just "whale", since a generic term can just
+  as easily match an unrelated species like whale sharks or dolphins) and about
+  setting when it matters (e.g. "wild open ocean" rather than a term that could
+  match an aquarium or marina)."""
+
+_SYSTEM_PROMPT = f"""You are the Creative Director for a short-form vertical video channel.
+Write a hook-first script for a voiceover, with a STRICT MAXIMUM of 110-130 words (not
+140-160): real narration with natural pauses between sentences runs slower than a raw
+word-count-to-seconds estimate suggests, and this needs genuine margin under the 60-second
+hard platform cap, not just a target that assumes zero pause time. If in doubt, write
+shorter. Optimize for retention: an open loop or bold claim in the first 2 seconds, and a
+payoff plus a short call-to-action at the end.
+
+{_SEARCH_TERM_GUIDANCE}
 
 Pick a music mood and, if one of the available BGM files fits, name it exactly as
 given; otherwise leave bgm_file null and a random track will be used.
@@ -43,6 +56,17 @@ available_voices list you're given - it must be a real TTS voice ID, never a
 description of a voice (e.g. never write something like "a deep calm narrator voice").
 
 Suggest a subtitle style. Draft a working title and 3 hook variants for the metadata."""
+
+_REVISE_TERMS_SYSTEM_PROMPT = f"""You are the Creative Director for a short-form vertical video channel.
+The script, voice, and everything else about this video is already finalized and must
+not change - a quality reviewer watched the rendered video and found that some of the
+stock footage doesn't match what the script is saying at that point. Your only job here is to
+produce a corrected set of search terms that will fetch footage that actually matches the
+script, directly addressing the reviewer's feedback (e.g. if they said a clip showed the
+wrong species or a captive/aquarium setting instead of the wild, make sure your new terms
+rule that out explicitly).
+
+{_SEARCH_TERM_GUIDANCE}"""
 
 
 class CreativeDirector(BaseAgent):
@@ -65,6 +89,20 @@ class CreativeDirector(BaseAgent):
             )
 
         return self.call_json(system=system, user=utils.to_json(payload), response_model=CreativeBrief)
+
+    def revise_search_terms(self, script: str, niche: str, revision_notes: str) -> List[str]:
+        """
+        A cheaper, targeted revision for when QA found a visual/material
+        mismatch but the script itself is fine: keeps the script (and its
+        already-validated length/voice/pacing) frozen and only asks for new
+        search terms, instead of discarding a working script to gamble on an
+        entirely new one every time footage doesn't match.
+        """
+        payload = {"script": script, "niche": niche, "revision_notes": revision_notes}
+        result = self.call_json(
+            system=_REVISE_TERMS_SYSTEM_PROMPT, user=utils.to_json(payload), response_model=SearchTermsRevision
+        )
+        return result.search_terms
 
     @staticmethod
     def _list_bgm_files() -> list[str]:

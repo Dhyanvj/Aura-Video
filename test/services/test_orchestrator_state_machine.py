@@ -12,7 +12,7 @@ from sqlmodel import create_engine
 import app.db.session as db_session
 from app.agents import base as agent_base
 from app.agents import orchestrator
-from app.agents.schemas import CreativeBrief, MetadataDraft
+from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport
 from app.db import session_scope
 from app.db.models import ProjectStatus, VideoProject
 from app.models import const
@@ -129,8 +129,15 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         self.assertEqual(project.qa_reports[0]["overall"], "pass")
 
     def test_revision_loop_caps_at_max_revisions_and_escalates(self):
+        # A missing rendered file means QA can't extract frames, so it always
+        # reports "revise"/revision_target="producer" (see
+        # QualityReviewer.review's no-frames fallback) - this exercises the
+        # materials-only revision path (revise_search_terms), not a full
+        # Creative Director rewrite.
         with patch.object(agent_base, "is_configured", return_value=True), patch(
             "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.revise_search_terms", return_value=["clip a", "clip b"]
         ), patch("app.agents.producer.task_service.start", side_effect=_fake_render_success):
             project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
             self._wait_for_status(project_id, {ProjectStatus.FAILED.value})
@@ -142,6 +149,83 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         self.assertEqual(project.revision_count, 2)
         self.assertEqual(len(project.qa_reports), 3)
         self.assertIn("limit (2)", project.failure_reason)
+        # The script itself was never rewritten - only search terms changed.
+        self.assertEqual(project.brief["script"], _fake_brief().script)
+
+    def test_materials_only_revision_keeps_script_and_succeeds_on_second_attempt(self):
+        # revision_target="producer" must not throw away a working script -
+        # it should only ask for new search terms and retry rendering.
+        qa_reports = [
+            QAReport(
+                overall="revise",
+                technical_checks=[],
+                frame_findings=[],
+                revision_target="producer",
+                revision_notes="Frame 2 shows the wrong animal.",
+            ),
+            QAReport(overall="pass", technical_checks=[], frame_findings=[]),
+        ]
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ) as mock_write, patch(
+            "app.agents.creative_director.CreativeDirector.revise_search_terms", return_value=["new clip a"]
+        ) as mock_revise_terms, patch(
+            "app.agents.producer.task_service.start", side_effect=_fake_render_success
+        ), patch(
+            "app.agents.quality_reviewer.QualityReviewer.review", side_effect=qa_reports
+        ), patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
+            self._wait_for_status(
+                project_id, {ProjectStatus.AWAITING_HUMAN_APPROVAL.value, ProjectStatus.FAILED.value}
+            )
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+        self.assertEqual(project.revision_count, 1)
+        self.assertEqual(len(project.qa_reports), 2)
+        self.assertEqual(mock_write.call_count, 1)
+        self.assertEqual(mock_revise_terms.call_count, 1)
+        self.assertEqual(project.brief["script"], _fake_brief().script)
+        self.assertEqual(project.brief["search_terms"], ["new clip a"])
+
+    def test_creative_director_targeted_revision_rewrites_script(self):
+        # revision_target="creative_director" (a script/narrative problem)
+        # must still go through the full rewrite path.
+        qa_reports = [
+            QAReport(
+                overall="revise",
+                technical_checks=[],
+                frame_findings=[],
+                revision_target="creative_director",
+                revision_notes="The hook is weak.",
+            ),
+            QAReport(overall="pass", technical_checks=[], frame_findings=[]),
+        ]
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ) as mock_write, patch(
+            "app.agents.creative_director.CreativeDirector.revise_search_terms"
+        ) as mock_revise_terms, patch(
+            "app.agents.producer.task_service.start", side_effect=_fake_render_success
+        ), patch(
+            "app.agents.quality_reviewer.QualityReviewer.review", side_effect=qa_reports
+        ), patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
+            self._wait_for_status(
+                project_id, {ProjectStatus.AWAITING_HUMAN_APPROVAL.value, ProjectStatus.FAILED.value}
+            )
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+        self.assertEqual(project.revision_count, 1)
+        self.assertEqual(mock_write.call_count, 2)
+        mock_revise_terms.assert_not_called()
 
     def test_resume_incomplete_projects_reruns_projects_stuck_mid_pipeline(self):
         # Simulate a crash: a project left in PRODUCING (as if the process

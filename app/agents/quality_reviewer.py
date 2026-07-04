@@ -23,6 +23,14 @@ problems, "fail" if the video is unusable. If "revise", set revision_target to
 and give concrete, actionable revision_notes."""
 
 
+# Technical checks that only a script change can fix - routing these to
+# "producer" would ask Producer to re-render with different footage, which
+# does nothing about spoken duration and would just fail the same check
+# again. duration_15_to_60s is a function of word count and speaking rate,
+# not material selection.
+_SCRIPT_ONLY_FIXABLE_CHECKS = {"duration_15_to_60s"}
+
+
 class QualityReviewer(BaseAgent):
     agent_name = "quality_reviewer"
 
@@ -53,12 +61,20 @@ class QualityReviewer(BaseAgent):
         overall = vision.overall
         revision_target = vision.revision_target
         revision_notes = vision.revision_notes
-        if any(not c.passed for c in technical_checks) and overall == "pass":
+        failed_checks = {c.name for c in technical_checks if not c.passed}
+
+        if failed_checks and overall == "pass":
             overall = "revise"
             revision_target = revision_target or "producer"
-            failed = ", ".join(c.name for c in technical_checks if not c.passed)
-            note = f"Automated technical checks failed: {failed}."
+            note = f"Automated technical checks failed: {', '.join(failed_checks)}."
             revision_notes = f"{revision_notes} {note}".strip() if revision_notes else note
+
+        if failed_checks & _SCRIPT_ONLY_FIXABLE_CHECKS:
+            # Overrides whatever the vision model guessed: it isn't told which
+            # failures are script-only vs. material-only, so it can (and did,
+            # in practice) label a duration overrun "producer" - which sends
+            # the revision to the one agent that can't fix it.
+            revision_target = "creative_director"
 
         report = QAReport(
             overall=overall,

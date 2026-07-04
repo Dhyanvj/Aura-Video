@@ -340,66 +340,109 @@ def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: 
         _set_status(project_id, ProjectStatus.SCRIPT_READY)
         _log_event(project_id, "Creative Director produced a script and brief")
 
-        _set_status(project_id, ProjectStatus.PRODUCING)
-        params = _video_params_from_brief(project_id, topic, brief)
-        producer = Producer(project_id)
-        final_state = producer.run(params)
-        _set_status(project_id, ProjectStatus.RENDERED)
-
-        _set_status(project_id, ProjectStatus.QA_REVIEW)
-        with session_scope() as session:
-            project = session.get(VideoProject, project_id)
-            video_path = project.video_path
-        reviewer = QualityReviewer(project_id)
-        qa_report = reviewer.review(
-            video_path=video_path, script=brief.script, subtitle_path=final_state.get("subtitle_path")
-        )
-        _append_qa_report(project_id, qa_report)
-
-        if qa_report.overall == "pass":
-            _set_status(project_id, ProjectStatus.QA_PASSED)
-            _prepare_publish_package(project_id, brief, video_path, niche)
-            _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
-            _log_event(project_id, "QA passed, publish package prepared, awaiting human approval")
-            return
-
-        if qa_report.overall == "fail":
-            _set_status(
-                project_id,
-                ProjectStatus.FAILED,
-                failure_reason=f"QA failed: {qa_report.revision_notes or 'unusable output'}",
-            )
-            _log_event(project_id, "QA marked the video unusable; escalated", type_="error")
-            return
-
-        # overall == "revise" - loop back through the Creative Director, capped
-        # at max_revisions automatic loops before escalating to a human.
-        with session_scope() as session:
-            project = session.get(VideoProject, project_id)
-            current_revision_count = project.revision_count
-
-        if current_revision_count >= _max_revisions():
-            _set_status(
-                project_id,
-                ProjectStatus.FAILED,
-                failure_reason=(
-                    f"QA requested a revision but the limit ({_max_revisions()}) was reached; "
-                    "escalated for human review with the QA report attached."
-                ),
-            )
-            _log_event(project_id, "Revision limit reached after QA feedback, escalating", type_="error")
-            return
-
-        _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=current_revision_count + 1)
-        _log_event(
-            project_id,
-            f"QA requested a revision ({current_revision_count + 1}/{_max_revisions()}): {qa_report.revision_notes}",
-        )
-        _run_pipeline(project_id, topic, niche, qa_report.revision_notes)
+        _produce_and_review(project_id, topic, niche, brief)
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
         logger.exception(f"project {project_id} failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
         _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
+
+
+def _produce_and_review(project_id: int, topic: str, niche: str, brief: CreativeBrief) -> None:
+    """
+    Renders `brief` and reviews it. On a "revise" verdict, either loops back
+    through the full Creative Director (script-level problems) or - for
+    material-only problems - regenerates just the search terms and re-enters
+    here directly, without discarding a script that already worked. Shares
+    one try/except with _run_pipeline via the caller; a materials-only retry
+    calls back into this function rather than _run_pipeline so it never
+    re-runs _write_brief.
+    """
+    _set_status(project_id, ProjectStatus.PRODUCING)
+    params = _video_params_from_brief(project_id, topic, brief)
+    producer = Producer(project_id)
+    final_state = producer.run(params)
+    _set_status(project_id, ProjectStatus.RENDERED)
+
+    _set_status(project_id, ProjectStatus.QA_REVIEW)
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        video_path = project.video_path
+    reviewer = QualityReviewer(project_id)
+    qa_report = reviewer.review(
+        video_path=video_path, script=brief.script, subtitle_path=final_state.get("subtitle_path")
+    )
+    _append_qa_report(project_id, qa_report)
+
+    if qa_report.overall == "pass":
+        _set_status(project_id, ProjectStatus.QA_PASSED)
+        _prepare_publish_package(project_id, brief, video_path, niche)
+        _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
+        _log_event(project_id, "QA passed, publish package prepared, awaiting human approval")
+        return
+
+    if qa_report.overall == "fail":
+        _set_status(
+            project_id,
+            ProjectStatus.FAILED,
+            failure_reason=f"QA failed: {qa_report.revision_notes or 'unusable output'}",
+        )
+        _log_event(project_id, "QA marked the video unusable; escalated", type_="error")
+        return
+
+    # overall == "revise", capped at max_revisions automatic loops (across
+    # both revision paths combined) before escalating to a human.
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        current_revision_count = project.revision_count
+
+    if current_revision_count >= _max_revisions():
+        _set_status(
+            project_id,
+            ProjectStatus.FAILED,
+            failure_reason=(
+                f"QA requested a revision but the limit ({_max_revisions()}) was reached; "
+                "escalated for human review with the QA report attached."
+            ),
+        )
+        _log_event(project_id, "Revision limit reached after QA feedback, escalating", type_="error")
+        return
+
+    next_revision_count = current_revision_count + 1
+
+    if qa_report.revision_target == "producer":
+        # A material/visual problem, not a script problem: the script (and
+        # its already-validated length, pacing, and voice) is kept as-is.
+        # Redoing the whole script on every revision was discarding scripts
+        # that already worked and gambling on an unvalidated new one instead
+        # of fixing the actual flagged issue - this fixes the issue directly.
+        _set_status(project_id, ProjectStatus.PRODUCING, revision_count=next_revision_count)
+        _log_event(
+            project_id,
+            f"QA requested a materials-only revision ({next_revision_count}/{_max_revisions()}): "
+            f"{qa_report.revision_notes}",
+        )
+        revised_brief = _revise_search_terms(project_id, niche, brief, qa_report.revision_notes or "")
+        _produce_and_review(project_id, topic, niche, revised_brief)
+        return
+
+    _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=next_revision_count)
+    _log_event(
+        project_id,
+        f"QA requested a revision ({next_revision_count}/{_max_revisions()}): {qa_report.revision_notes}",
+    )
+    _run_pipeline(project_id, topic, niche, qa_report.revision_notes)
+
+
+def _revise_search_terms(project_id: int, niche: str, brief: CreativeBrief, revision_notes: str) -> CreativeBrief:
+    director = CreativeDirector(project_id)
+    new_terms = director.revise_search_terms(script=brief.script, niche=niche, revision_notes=revision_notes)
+    revised = brief.model_copy(update={"search_terms": new_terms})
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        project.brief = revised.model_dump()
+        session.add(project)
+        session.commit()
+    return revised
 
 
 def retry_with_revision(project_id: int, revision_notes: str) -> None:

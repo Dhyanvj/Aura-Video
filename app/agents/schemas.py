@@ -32,6 +32,10 @@ class CreativeBrief(BaseModel):
     metadata_draft: MetadataDraft
 
 
+class SearchTermsRevision(BaseModel):
+    search_terms: List[str]
+
+
 class TechnicalCheck(BaseModel):
     name: str
     passed: bool
