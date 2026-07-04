@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
+from app.agents.orchestrator import resume_incomplete_projects
 from app.config import config
 from app.db import init_db
 from app.models.exception import HttpException
@@ -82,3 +83,4 @@ def shutdown_event():
 def startup_event():
     logger.info("startup event")
     init_db()
+    resume_incomplete_projects()
