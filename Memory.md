@@ -80,12 +80,27 @@ You tried starting a second `python main.py` while one was already running. The 
 
 **Practical takeaway going forward:** always fully kill any previous instance (`lsof -ti:8080 | xargs kill -9`) before starting a new one. The lock now prevents this specific corruption, but it can't undo it retroactively — an already-corrupted project row from before the fix still needs a fresh restart.
 
+**Important gotcha I hit while fixing this:** writing the fix to disk is not the same as it being active — the already-running server process (started before the fix existed) kept running the *old* code and was **still vulnerable** until it was actually killed and restarted. A duplicate launch attempt after the fix was written but before the real restart reproduced the exact same race again. Confirmed the fix is genuinely active now by: checking `storage/aura.pid` gets created on startup, and deliberately starting a real duplicate instance and watching it correctly refuse (log the error, skip resume/scheduler, still fail to bind as expected) while the original kept running undisturbed.
+
+### 8. QA flagged a "broken render — SMPTE color bars" for project 1 that was never real
+A QA report on project 1 showed a detailed, genuine Claude vision critique of a video that was entirely SMPTE test bars with a timecode counter, script `"A short punchy script."`. **This was contamination from my own interactive debugging, not a real pipeline failure.** Traced it down:
+- Grepped the entire real codebase for `testsrc`/`SMPTE`/`ColorClip` fallbacks — none exist outside test fixtures. The real pipeline has no code path that could ever produce this output.
+- Verified empirically that the formal automated test suite does *not* write to the real `storage/aura.db` (ran the specific test, checked project count before/after: unchanged).
+- Concluded it came from an earlier ad-hoc `python -c "..."` diagnostic command (not the formal test suite) that used a real project ID against the live database instead of an isolated one, while also making a real, unmocked vision call against a leftover ffmpeg test fixture. My mistake; no code fix needed since the real pipeline was never at risk — just a reminder to always use throwaway project IDs / isolated DBs for interactive debugging, never the live one.
+
+The **second** QA report on the same project (footage not matching the octopus script — turtles, divers, rocks, and an off-brand pill/capsule shot instead of octopus footage) **was completely real**, and is the one worth fixing:
+
+### 9. **Real bug** — Creative Director's search terms produced Pexels stock-footage mismatches
+**Root cause:** search terms like `"octopus heart anatomy diagram"` and `"blue blood macro liquid"` describe abstract/scientific concepts with no direct stock-footage equivalent. Pexels' fuzzy keyword search doesn't understand intent — it returned generic or unrelated footage that loosely matched the adjectives (turtles/divers for the vague "diagram" term, pill/capsule macro photography for "blue blood macro liquid" — an off-brand, TikTok-risky mismatch).
+
+**Fix (`app/agents/creative_director.py`):** strengthened the system prompt to require every search term to name a concrete, literally filmable subject; explicitly instructs translating abstract/scientific script content into a real visible scene of the actual subject instead of the abstract idea, and explicitly warns against "abstract noun + macro/close-up" phrasing with no concrete subject anchored to it. This won't eliminate stock-footage mismatches entirely (Pexels' catalog for a specific niche subject like octopuses is a hard constraint), but should reduce how often the QA revision loop needs to catch it — and the revision loop itself was already working correctly (the second attempt's search terms had already improved from QA feedback before this prompt fix even landed, e.g. anchoring "octopus" onto every term instead of some).
+
 ---
 
 ## Current state (as of 2026-07-04, end of session)
 
 - Anthropic + YouTube Data API keys configured and confirmed working.
 - Upload-Post **not yet configured** — publishing (the Approve button) will fail until `upload_post_api_key` / `upload_post_username` are set under `[app]`.
-- The end-to-end test project ("why octopuses have three hearts", project id 1) shows `FAILED` in the dashboard due to the race described in #7, but its render actually succeeded — the real video is at `storage/tasks/3dee0303-e64e-499e-9849-7870b1f6fbae/final-1.mp4` (verified: 55s, 1080x1920, has audio). Recommend starting a fresh project rather than trying to recover that row.
+- Project 1 ("why octopuses have three hearts") has gone through 2 real completed renders so far (both technically valid, `storage/tasks/3dee0303-.../final-1.mp4` and `storage/tasks/8ee57735-.../final-1.mp4`), both QA'd for real and correctly sent back for revision due to footage relevance — currently on a 3rd attempt after the server restart in #7, should reach the approval queue once footage relevance clears QA.
 - Full test suite: 198 tests, only the one pre-existing unrelated failure (missing `storage/temp` dir affecting a Gemini TTS test fixture, present since before this session).
-- **Only ever run one `python main.py` instance at a time** — always `lsof -ti:8080 | xargs kill -9` first if unsure whether one is already running.
+- **Only ever run one `python main.py` instance at a time** — always `lsof -ti:8080 | xargs kill -9` first if unsure whether one is already running. **And when a code fix changes server behavior, the running process must actually be restarted** — saving the file isn't enough.

@@ -16,6 +16,25 @@ term should correspond to what's being said around that point in the video) - th
 feeds a "match materials to script" pipeline that downloads and places clips
 sequentially, so order matters.
 
+Search terms are matched against a real stock-footage library (Pexels) by fuzzy
+keyword search, not by an LLM that understands intent - so a term with no concrete,
+filmable subject will return generic or unrelated footage instead of erroring. To
+avoid that:
+- Every single term must name a concrete, literally filmable subject (e.g. the
+  animal/object/person/place itself), not just an abstract concept. If the topic
+  is scientific or abstract (anatomy, a process, a statistic), translate it into
+  a concrete visible scene of the actual subject instead of the abstract idea -
+  e.g. for "an octopus's three hearts", use "octopus close-up gills and mantle"
+  or "octopus swimming underwater", never "heart anatomy diagram" (no stock
+  footage shows an anatomy diagram of this animal).
+- Never write a term like "<abstract noun> macro/close-up shot" with no concrete
+  subject attached (e.g. "blue blood macro liquid") - stock libraries will
+  return whatever generic macro footage loosely matches the adjectives, which is
+  often unrelated and can occasionally be off-topic or inappropriate (e.g.
+  colorful liquid/capsule photography). Anchor every term to the actual subject:
+  "octopus with blue-tinted skin close-up", not "blue liquid macro".
+- Prefer the subject's name literally present in most terms rather than implied.
+
 Pick a music mood and, if one of the available BGM files fits, name it exactly as
 given; otherwise leave bgm_file null and a random track will be used.
 
