@@ -7,7 +7,8 @@ from sqlmodel import select
 from app.agents import base as agent_base
 from app.agents.creative_director import CreativeDirector
 from app.agents.producer import Producer
-from app.agents.schemas import CreativeBrief
+from app.agents.quality_reviewer import QualityReviewer
+from app.agents.schemas import CreativeBrief, QAReport
 from app.agents.trend_scout import TrendScout
 from app.config import config
 from app.db import session_scope
@@ -15,11 +16,16 @@ from app.db.models import AgentEvent, ProjectStatus, VideoProject
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
 
 # Statuses a project can be resumed from on startup after a crash. Any project
-# still in one of these when the process starts was interrupted mid-pipeline.
+# still in one of these (and with a topic already picked) when the process
+# starts was interrupted mid-pipeline; _run_pipeline restarts the stage rather
+# than resuming a specific sub-step.
 _RESUMABLE_STATUSES = {
     ProjectStatus.IDEA_READY.value,
     ProjectStatus.SCRIPTING.value,
+    ProjectStatus.SCRIPT_READY.value,
     ProjectStatus.PRODUCING.value,
+    ProjectStatus.RENDERED.value,
+    ProjectStatus.QA_REVIEW.value,
 }
 _RECENT_TOPICS_LIMIT = 30
 
@@ -142,6 +148,16 @@ def _video_params_from_brief(topic: str, brief: CreativeBrief) -> VideoParams:
     )
 
 
+def _append_qa_report(project_id: int, report: QAReport) -> None:
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        reports = list(project.qa_reports or [])
+        reports.append(report.model_dump())
+        project.qa_reports = reports
+        session.add(project)
+        session.commit()
+
+
 def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: Optional[str] = None) -> None:
     try:
         if not agent_base.is_configured():
@@ -157,12 +173,58 @@ def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: 
         _set_status(project_id, ProjectStatus.PRODUCING)
         params = _video_params_from_brief(topic, brief)
         producer = Producer(project_id)
-        producer.run(params)
+        final_state = producer.run(params)
+        _set_status(project_id, ProjectStatus.RENDERED)
 
-        # QA (M4) and Publisher (M5) are not wired in yet, so a rendered video
-        # goes straight to the human-approval gate.
-        _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
-        _log_event(project_id, "Render complete, awaiting human approval")
+        _set_status(project_id, ProjectStatus.QA_REVIEW)
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            video_path = project.video_path
+        reviewer = QualityReviewer(project_id)
+        qa_report = reviewer.review(
+            video_path=video_path, script=brief.script, subtitle_path=final_state.get("subtitle_path")
+        )
+        _append_qa_report(project_id, qa_report)
+
+        if qa_report.overall == "pass":
+            _set_status(project_id, ProjectStatus.QA_PASSED)
+            _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
+            _log_event(project_id, "QA passed, awaiting human approval")
+            return
+
+        if qa_report.overall == "fail":
+            _set_status(
+                project_id,
+                ProjectStatus.FAILED,
+                failure_reason=f"QA failed: {qa_report.revision_notes or 'unusable output'}",
+            )
+            _log_event(project_id, "QA marked the video unusable; escalated", type_="error")
+            return
+
+        # overall == "revise" - loop back through the Creative Director, capped
+        # at max_revisions automatic loops before escalating to a human.
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            current_revision_count = project.revision_count
+
+        if current_revision_count >= _max_revisions():
+            _set_status(
+                project_id,
+                ProjectStatus.FAILED,
+                failure_reason=(
+                    f"QA requested a revision but the limit ({_max_revisions()}) was reached; "
+                    "escalated for human review with the QA report attached."
+                ),
+            )
+            _log_event(project_id, "Revision limit reached after QA feedback, escalating", type_="error")
+            return
+
+        _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=current_revision_count + 1)
+        _log_event(
+            project_id,
+            f"QA requested a revision ({current_revision_count + 1}/{_max_revisions()}): {qa_report.revision_notes}",
+        )
+        _run_pipeline(project_id, topic, niche, qa_report.revision_notes)
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
         logger.exception(f"project {project_id} failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))

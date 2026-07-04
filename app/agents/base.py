@@ -1,6 +1,5 @@
-import json
 import time
-from typing import Optional, Type, TypeVar
+from typing import List, Optional, Type, TypeVar, Union
 
 import anthropic
 from loguru import logger
@@ -101,10 +100,23 @@ class BaseAgent:
         max_retries: int = 3,
         max_tokens: int = 4096,
     ) -> T:
+        """Call Claude with a plain-text user turn and force a structured response."""
+        return self.call_json_with_content(system, user, response_model, max_retries, max_tokens)
+
+    def call_json_with_content(
+        self,
+        system: str,
+        user: Union[str, List[dict]],
+        response_model: Type[T],
+        max_retries: int = 3,
+        max_tokens: int = 4096,
+    ) -> T:
         """
         Call Claude and force a structured response matching response_model,
-        via a single-tool tool_choice. Retries on transient API errors and on
-        pydantic validation failures (feeding the error back to the model).
+        via a single-tool tool_choice. `user` may be a plain string or a list
+        of content blocks (e.g. mixed text/image blocks for vision review).
+        Retries on transient API errors and on pydantic validation failures
+        (feeding the error back to the model).
         """
         if not is_configured():
             raise AgentNotConfiguredError(

@@ -30,3 +30,33 @@ class CreativeBrief(BaseModel):
     voice_recommendation: str
     subtitle_style: str
     metadata_draft: MetadataDraft
+
+
+class TechnicalCheck(BaseModel):
+    name: str
+    passed: bool
+    detail: str
+
+
+class FrameFinding(BaseModel):
+    frame_index: int
+    matches_script: bool
+    issues: List[str] = Field(default_factory=list)
+    notes: str
+
+
+class VisionReview(BaseModel):
+    overall: str  # pass | revise | fail
+    frame_findings: List[FrameFinding]
+    content_policy_flags: List[str] = Field(default_factory=list)
+    revision_target: Optional[str] = None  # creative_director | producer
+    revision_notes: Optional[str] = None
+
+
+class QAReport(BaseModel):
+    overall: str  # pass | revise | fail
+    technical_checks: List[TechnicalCheck]
+    frame_findings: List[FrameFinding]
+    content_policy_flags: List[str] = Field(default_factory=list)
+    revision_target: Optional[str] = None
+    revision_notes: Optional[str] = None

@@ -80,6 +80,7 @@ def _project_summary(project: VideoProject) -> dict:
         "topic": project.topic,
         "trend_report": project.trend_report,
         "brief": project.brief,
+        "qa_reports": project.qa_reports,
         "task_id": project.task_id,
         "video_path": project.video_path,
         "cost_usd": project.cost_usd,
