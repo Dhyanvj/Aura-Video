@@ -6,13 +6,17 @@ from app.services import trends as trends_service
 from app.utils import utils
 
 _SYSTEM_PROMPT = """You are the Trend Scout for a short-form vertical video channel.
-Given a niche, an audience description, real-world trend signals, and a list of
-recently used topics to avoid repeating, propose 5-10 ranked video topic ideas.
+Given a niche, an audience description, real-world trend signals, a list of
+recently used topics to avoid repeating, and (if available) performance insights
+from previous videos in this niche, propose 5-10 ranked video topic ideas.
 
 For each idea, give: a title concept, why it's trending right now, evidence (facts,
 links, or stats where you have them), the target emotion/hook, an estimated
 competition level (low/medium/high), a suggested format (listicle/story/fact/how-to),
 and a 0-100 opportunity score balancing trend strength against competition.
+
+If performance insights are provided, use them to favor formats/hooks that worked
+before and avoid ones that didn't.
 
 Never propose a topic that duplicates or closely overlaps one of the topics to avoid."""
 
@@ -20,7 +24,13 @@ Never propose a topic that duplicates or closely overlaps one of the topics to a
 class TrendScout(BaseAgent):
     agent_name = "trend_scout"
 
-    def scout(self, niche: str, audience: str, recent_topics: Optional[List[str]] = None) -> TrendReport:
+    def scout(
+        self,
+        niche: str,
+        audience: str,
+        recent_topics: Optional[List[str]] = None,
+        performance_notes: Optional[List[str]] = None,
+    ) -> TrendReport:
         recent_topics = recent_topics or []
 
         youtube = trends_service.youtube_signals(niche)
@@ -37,6 +47,7 @@ class TrendScout(BaseAgent):
                 "niche": niche,
                 "audience": audience,
                 "topics_to_avoid": recent_topics,
+                "performance_insights_from_previous_videos": performance_notes or [],
                 "youtube_signals": youtube,
                 "google_trends_signals": google,
             }

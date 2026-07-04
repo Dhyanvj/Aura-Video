@@ -68,6 +68,10 @@ class PlatformVariant(BaseModel):
     hashtags: List[str] = Field(default_factory=list)
 
 
+class PerformanceInsight(BaseModel):
+    note: str  # one short "what worked / what didn't" sentence
+
+
 class PublishPackage(BaseModel):
     title_options: List[str] = Field(min_length=3, max_length=3)
     description: str

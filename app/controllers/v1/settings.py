@@ -19,6 +19,7 @@ class UpdateSettingsRequest(BaseModel):
     videos_per_day: Optional[int] = None
     run_at: Optional[str] = None
     default_platforms: Optional[List[str]] = None
+    monthly_budget_usd: Optional[float] = None
 
 
 @router.get("/settings", summary="Get studio settings (secrets are never returned)")
@@ -42,6 +43,8 @@ def update_settings(request: Request, body: UpdateSettingsRequest):
         config.schedule["run_at"] = body.run_at
     if body.default_platforms is not None:
         config.app["upload_post_platforms"] = body.default_platforms
+    if body.monthly_budget_usd is not None:
+        config.agents["monthly_budget_usd"] = body.monthly_budget_usd
 
     config.save_config()
     scheduler.stop_scheduler()
@@ -59,6 +62,7 @@ def _current_settings() -> dict:
         "videos_per_day": config.schedule.get("videos_per_day", 1),
         "run_at": config.schedule.get("run_at", "09:00"),
         "default_platforms": config.app.get("upload_post_platforms", []),
+        "monthly_budget_usd": config.agents.get("monthly_budget_usd", 0),
         "anthropic_configured": bool(config.agents.get("anthropic_api_key")),
         "youtube_configured": bool(config.trends.get("youtube_api_key")),
         "upload_post_configured": bool(

@@ -7,7 +7,10 @@ from sqlmodel import Field, SQLModel
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    # Naive but UTC: SQLite drops tzinfo on round-trip, so a tz-aware value
+    # here would only match tz-aware values before the first save/reload,
+    # then raise on any naive-vs-aware arithmetic against a reloaded row.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class ProjectStatus(str, Enum):
@@ -27,11 +30,6 @@ class ProjectStatus(str, Enum):
     ARCHIVED = "ARCHIVED"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
-
-
-class AutopilotLevel(str, Enum):
-    manual = "manual"
-    semi = "semi"
 
 
 class VideoProject(SQLModel, table=True):
@@ -58,6 +56,7 @@ class VideoProject(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+    published_at: Optional[datetime] = None
 
 
 class AgentEvent(SQLModel, table=True):
@@ -71,16 +70,3 @@ class AgentEvent(SQLModel, table=True):
     tokens_out: Optional[int] = None
     cost_usd: Optional[float] = None
     created_at: datetime = Field(default_factory=utcnow, index=True)
-
-
-class Settings(SQLModel, table=True):
-    id: Optional[int] = Field(default=1, primary_key=True)
-    niche: str = ""
-    audience: str = ""
-    autopilot_level: str = Field(default=AutopilotLevel.semi.value)
-    schedule_enabled: bool = False
-    videos_per_day: int = 1
-    run_at: str = "09:00"
-    default_platforms: list = Field(default_factory=lambda: ["tiktok", "instagram"], sa_column=Column(JSON))
-    monthly_budget_cap_usd: Optional[float] = None
-    updated_at: datetime = Field(default_factory=utcnow)

@@ -110,6 +110,23 @@ export default function Settings() {
       </section>
 
       <section className="mb-6 rounded-lg border border-border bg-panel p-4">
+        <h2 className="mb-3 text-sm font-semibold text-slate-200">Budget</h2>
+        <label className="mb-1 block text-xs text-slate-400">Monthly budget cap (USD, 0 = no cap)</label>
+        <input
+          type="number"
+          min={0}
+          step="0.01"
+          defaultValue={settings.monthly_budget_usd}
+          onBlur={(e) => save({ monthly_budget_usd: Number(e.target.value) })}
+          className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+        />
+        <p className="mt-2 text-xs text-slate-500">
+          When the cap is reached, the daily scheduler stops creating new auto-trend projects for the rest of the
+          month. Manual project creation is never blocked.
+        </p>
+      </section>
+
+      <section className="mb-6 rounded-lg border border-border bg-panel p-4">
         <h2 className="mb-3 text-sm font-semibold text-slate-200">Default platforms</h2>
         <div className="flex gap-4">
           {PLATFORMS.map((platform) => (

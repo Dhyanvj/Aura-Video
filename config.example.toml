@@ -470,6 +470,12 @@ max_revisions = 2
 # Final-video approval can never be disabled, regardless of this setting.
 autopilot_level = "semi"
 
+# Monthly cap on total LLM cost (USD) across all projects created this
+# calendar month. 0 or omitted = no cap. When exceeded, the daily scheduler
+# stops creating new auto-trend projects (manual project creation is
+# unaffected).
+monthly_budget_usd = 0
+
 [trends]
 # Optional. Enables real trend data (mostPopular + search) via YouTube Data API v3,
 # and unlocks the Performance Analyst's view/like/comment tracking after publish.

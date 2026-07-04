@@ -13,7 +13,7 @@ from app.agents.schemas import CreativeBrief, QAReport
 from app.agents.trend_scout import TrendScout
 from app.config import config
 from app.db import session_scope
-from app.db.models import AgentEvent, ProjectStatus, VideoProject
+from app.db.models import AgentEvent, ProjectStatus, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
 from app.services.ws_manager import broadcast_event, broadcast_status
 
@@ -52,6 +52,27 @@ def _set_status(project_id: int, status: ProjectStatus, **fields) -> None:
 
 def _max_revisions() -> int:
     return int(config.agents.get("max_revisions", 2))
+
+
+def _recent_performance_notes(niche: str, limit: int = 5) -> list[str]:
+    # Feeds prior "what worked / what didn't" insights back into the next
+    # Trend Scout run for this niche.
+    if not niche:
+        return []
+    with session_scope() as session:
+        projects = session.exec(
+            select(VideoProject)
+            .where(VideoProject.niche == niche)
+            .where(VideoProject.analytics.is_not(None))
+            .order_by(VideoProject.updated_at.desc())
+            .limit(limit)
+        ).all()
+    notes = []
+    for project in projects:
+        for checkpoint in (project.analytics or {}).get("checkpoints", []):
+            if checkpoint.get("note"):
+                notes.append(checkpoint["note"])
+    return notes
 
 
 def _recent_topics() -> list[str]:
@@ -110,7 +131,12 @@ def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None
                 "agents.anthropic_api_key is not configured; cannot run the Trend Scout"
             )
         scout = TrendScout(project_id)
-        report = scout.scout(niche=niche, audience=audience, recent_topics=_recent_topics())
+        report = scout.scout(
+            niche=niche,
+            audience=audience,
+            recent_topics=_recent_topics(),
+            performance_notes=_recent_performance_notes(niche),
+        )
         with session_scope() as session:
             project = session.get(VideoProject, project_id)
             project.trend_report = report.model_dump()
@@ -323,8 +349,11 @@ def _run_publish(
             session.commit()
 
         if all(r.get("success") for r in results):
-            _set_status(project_id, ProjectStatus.PUBLISHED)
+            _set_status(project_id, ProjectStatus.PUBLISHED, published_at=utcnow())
             _log_event(project_id, "Published successfully")
+            # Tracking begins immediately; the Performance Analyst scheduler
+            # job picks up the 24h/72h checkpoints from here.
+            _set_status(project_id, ProjectStatus.TRACKING)
         else:
             _set_status(project_id, ProjectStatus.FAILED, failure_reason=f"publish failed: {results}")
             _log_event(project_id, f"Publish failed: {results}", type_="error")
@@ -370,3 +399,68 @@ def resume_incomplete_projects() -> None:
         _log_event(project_id, "Resuming after restart")
         thread = threading.Thread(target=_run_pipeline, args=(project_id, topic or "", niche or ""), daemon=True)
         thread.start()
+
+
+_PERFORMANCE_CHECKPOINTS_HOURS = (24, 72)
+
+
+def run_performance_checks() -> None:
+    """
+    Called periodically by the scheduler. For every TRACKING project, checks
+    whether a 24h or 72h post-publish checkpoint is due and, if so, pulls
+    view/like/comment counts (and a short insight) via the Performance
+    Analyst. Archives a project once its final checkpoint is recorded, or
+    immediately if analytics can't be checked at all (no YouTube key, or no
+    YouTube post found) so it isn't re-evaluated on every tick.
+    """
+    from app.agents.performance_analyst import PerformanceAnalyst
+    from app.services import youtube_analytics
+
+    now = utcnow()
+    with session_scope() as session:
+        tracking = session.exec(select(VideoProject).where(VideoProject.status == ProjectStatus.TRACKING.value)).all()
+        snapshot = [
+            (p.id, p.published_at, p.published_posts, p.brief, p.niche, p.analytics) for p in tracking
+        ]
+
+    for project_id, published_at, published_posts, brief, niche, analytics in snapshot:
+        if published_at is None:
+            continue
+
+        if not youtube_analytics.is_configured():
+            _set_status(project_id, ProjectStatus.ARCHIVED)
+            _log_event(project_id, "Analytics not configured (no YouTube Data API key); archiving without tracking")
+            continue
+
+        video_id = youtube_analytics.extract_youtube_video_id(published_posts)
+        if not video_id:
+            _set_status(project_id, ProjectStatus.ARCHIVED)
+            _log_event(project_id, "No YouTube post found among published platforms; archiving without tracking")
+            continue
+
+        elapsed_hours = (now - published_at).total_seconds() / 3600
+        analytics = analytics or {}
+        done_checkpoints = {c["checkpoint_hours"] for c in analytics.get("checkpoints", [])}
+
+        for checkpoint_hours in _PERFORMANCE_CHECKPOINTS_HOURS:
+            if checkpoint_hours in done_checkpoints or elapsed_hours < checkpoint_hours:
+                continue
+            analyst = PerformanceAnalyst(project_id)
+            script = (brief or {}).get("script", "")
+            result = analyst.check(
+                video_id, checkpoint_hours, script, niche or "", analytics.get("checkpoints")
+            )
+            if result is None:
+                continue
+            with session_scope() as session:
+                project = session.get(VideoProject, project_id)
+                current = list((project.analytics or {}).get("checkpoints", []))
+                current.append(result)
+                project.analytics = {"checkpoints": current}
+                session.add(project)
+                session.commit()
+            done_checkpoints.add(checkpoint_hours)
+
+        if max(_PERFORMANCE_CHECKPOINTS_HOURS) in done_checkpoints:
+            _set_status(project_id, ProjectStatus.ARCHIVED)
+            _log_event(project_id, "Final performance checkpoint recorded; archiving")

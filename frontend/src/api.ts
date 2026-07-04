@@ -83,9 +83,34 @@ export interface Settings {
   videos_per_day: number;
   run_at: string;
   default_platforms: string[];
+  monthly_budget_usd: number;
   anthropic_configured: boolean;
   youtube_configured: boolean;
   upload_post_configured: boolean;
+}
+
+export interface AnalyticsCheckpoint {
+  checkpoint_hours: number;
+  views: number;
+  likes: number;
+  comments: number;
+  note: string | null;
+}
+
+export interface AnalyticsVideo {
+  project_id: number;
+  topic: string | null;
+  niche: string | null;
+  cost_usd: number;
+  published_at: string | null;
+  checkpoints: AnalyticsCheckpoint[];
+}
+
+export interface Analytics {
+  youtube_configured: boolean;
+  monthly_spend_usd: number;
+  monthly_budget_cap_usd: number;
+  videos: AnalyticsVideo[];
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -123,6 +148,7 @@ export const api = {
   getSettings: () => apiFetch<Settings>("/api/v1/settings"),
   updateSettings: (partial: Partial<Settings>) =>
     apiFetch<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(partial) }),
+  getAnalytics: () => apiFetch<Analytics>("/api/v1/analytics"),
 };
 
 // video_path/thumbnail paths from the API are absolute server-side filesystem
