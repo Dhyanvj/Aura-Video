@@ -69,9 +69,68 @@ export interface Project {
   cost_usd: number;
   revision_count: number;
   failure_reason: string | null;
+  content_type_id: string | null;
+  quality_preset: string | null;
+  series_id: number | null;
+  episode_number: number | null;
   created_at: string;
   updated_at: string;
   events?: AgentEventT[];
+}
+
+export type QualityPreset = "budget" | "standard" | "cinematic";
+
+export interface ContentTypeTemplate {
+  id: string;
+  label: string;
+  default_duration_s: number;
+  scriptcraft_overrides: Record<string, unknown>;
+  visual_strategy: Record<string, unknown>;
+  voice_style: string;
+  subtitle_theme: string;
+  music_palette: string;
+  research_required: boolean;
+  freshness_window_hours: number | null;
+  series_capable: boolean;
+  default_quality_preset: QualityPreset;
+}
+
+export interface SeriesEpisode {
+  id: number;
+  episode_number: number | null;
+  topic: string | null;
+  status: string;
+  created_at: string;
+}
+
+export interface SeriesT {
+  id: number;
+  content_type_id: string;
+  title: string;
+  style_guide: Record<string, unknown>;
+  voice_id: string;
+  voice_delivery_settings: Record<string, unknown>;
+  music_palette: Record<string, unknown>;
+  character_reference: Record<string, unknown> | null;
+  pronunciation_dictionary: Record<string, unknown>;
+  episode_counter: number;
+  episode_count: number;
+  rolling_summary: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  episodes?: SeriesEpisode[];
+}
+
+export interface CreateProjectPayload {
+  topic?: string;
+  niche?: string;
+  audience?: string;
+  content_type_id?: string;
+  quality_preset?: QualityPreset;
+  series_mode?: "none" | "new" | "continue";
+  series_title?: string;
+  series_id?: number;
 }
 
 export interface Settings {
@@ -87,6 +146,7 @@ export interface Settings {
   anthropic_configured: boolean;
   youtube_configured: boolean;
   upload_post_configured: boolean;
+  publishing_enabled: boolean;
 }
 
 export interface AnalyticsCheckpoint {
@@ -128,10 +188,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   listProjects: () => apiFetch<{ projects: Project[] }>("/api/v1/projects").then((r) => r.projects),
   getProject: (id: number) => apiFetch<Project>(`/api/v1/projects/${id}`),
-  createProject: (topic: string, niche: string, audience: string) =>
+  createProject: (payload: CreateProjectPayload) =>
     apiFetch<{ project_id: number }>("/api/v1/projects", {
       method: "POST",
-      body: JSON.stringify({ topic, niche, audience }),
+      body: JSON.stringify(payload),
     }),
   approveProject: (id: number, platforms: string[], thumbnailPath?: string) =>
     apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/approve`, {
@@ -149,6 +209,17 @@ export const api = {
   updateSettings: (partial: Partial<Settings>) =>
     apiFetch<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(partial) }),
   getAnalytics: () => apiFetch<Analytics>("/api/v1/analytics"),
+  listContentTypes: () =>
+    apiFetch<{ content_types: ContentTypeTemplate[] }>("/api/v1/content-types").then((r) => r.content_types),
+  updateContentType: (id: string, partial: Partial<ContentTypeTemplate>) =>
+    apiFetch<ContentTypeTemplate>(`/api/v1/content-types/${id}`, { method: "PUT", body: JSON.stringify(partial) }),
+  listSeries: () => apiFetch<{ series: SeriesT[] }>("/api/v1/series").then((r) => r.series),
+  getSeries: (id: number) => apiFetch<SeriesT>(`/api/v1/series/${id}`),
+  createSeries: (content_type_id: string, title: string) =>
+    apiFetch<{ series_id: number }>("/api/v1/series", {
+      method: "POST",
+      body: JSON.stringify({ content_type_id, title }),
+    }),
 };
 
 // video_path/thumbnail paths from the API are absolute server-side filesystem

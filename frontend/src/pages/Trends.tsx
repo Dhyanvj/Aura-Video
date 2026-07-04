@@ -14,7 +14,7 @@ export default function Trends() {
   const promote = async (title: string, niche: string | null) => {
     setBusyTitle(title);
     try {
-      const { project_id } = await api.createProject(title, niche || "", "");
+      const { project_id } = await api.createProject({ topic: title, niche: niche || "" });
       navigate(`/projects/${project_id}`);
     } finally {
       setBusyTitle(null);

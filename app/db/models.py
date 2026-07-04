@@ -54,9 +54,68 @@ class VideoProject(SQLModel, table=True):
     cost_usd: float = Field(default=0.0)
     revision_count: int = Field(default=0)
 
+    # v2: which content-type template and quality preset this project was
+    # created with, and which series (if any) it belongs to. All nullable so
+    # existing rows from before this migration still open normally.
+    content_type_id: Optional[str] = Field(default=None, foreign_key="contenttypetemplate.id", index=True)
+    quality_preset: Optional[str] = None
+    series_id: Optional[int] = Field(default=None, foreign_key="series.id", index=True)
+    episode_number: Optional[int] = None
+
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     published_at: Optional[datetime] = None
+
+
+class Series(SQLModel, table=True):
+    """
+    The "Series Bible": shared state that keeps episodes of a series
+    consistent (same voice, same visual style, continuity) without needing a
+    dedicated continuity agent - Creative Director reads it, Quality Reviewer
+    validates against it.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    content_type_id: str = Field(foreign_key="contenttypetemplate.id", index=True)
+    title: str
+    style_guide: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Empty until the founding episode's Creative Director recommends a valid
+    # voice, at which point it's locked in for every future episode - see
+    # orchestrator._resolve_voice_name.
+    voice_id: str = Field(default="")
+    voice_delivery_settings: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    music_palette: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    character_reference: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    pronunciation_dictionary: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    episode_counter: int = Field(default=0)
+    rolling_summary: str = ""
+    status: str = Field(default="active")  # active | paused | archived
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ContentTypeTemplate(SQLModel, table=True):
+    """
+    Data-driven "New Video" presets (Motivational, Fun Facts, AI News, World
+    News, Trending Now). Seeded with built-in defaults on first startup and
+    editable from Settings - a bug fix or new format is a row edit, not a
+    code branch.
+    """
+
+    id: str = Field(primary_key=True)  # slug, e.g. "motivational"
+    label: str
+    default_duration_s: int
+    scriptcraft_overrides: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    visual_strategy: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    voice_style: str
+    subtitle_theme: str
+    music_palette: str
+    research_required: bool = False
+    freshness_window_hours: Optional[int] = None
+    series_capable: bool = False
+    default_quality_preset: str = "standard"  # budget | standard | cinematic
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class AgentEvent(SQLModel, table=True):

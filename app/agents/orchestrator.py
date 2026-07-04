@@ -13,7 +13,7 @@ from app.agents.schemas import CreativeBrief, QAReport
 from app.agents.trend_scout import TrendScout
 from app.config import config
 from app.db import session_scope
-from app.db.models import AgentEvent, ProjectStatus, VideoProject, utcnow
+from app.db.models import AgentEvent, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
 from app.services.ws_manager import broadcast_event, broadcast_status
 
@@ -87,14 +87,56 @@ def _recent_topics() -> list[str]:
     return [t for t in rows if t]
 
 
-def start_manual_project(topic: str, niche: str = "") -> int:
+def create_series(content_type_id: str, title: str, style_guide: Optional[dict] = None) -> int:
+    """
+    Starts a new Series Bible with no locked voice yet - the founding
+    episode's Creative Director recommendation locks it in (see
+    _resolve_voice_name).
+    """
+    with session_scope() as session:
+        series = Series(content_type_id=content_type_id, title=title, style_guide=style_guide or {})
+        session.add(series)
+        session.commit()
+        session.refresh(series)
+        return series.id
+
+
+def next_episode_number(series_id: int) -> int:
+    """Reserves and returns the next episode number for a series, bumping its counter."""
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            raise ValueError(f"series {series_id} not found")
+        series.episode_counter += 1
+        series.updated_at = utcnow()
+        session.add(series)
+        session.commit()
+        return series.episode_counter
+
+
+def start_manual_project(
+    topic: str,
+    niche: str = "",
+    content_type_id: Optional[str] = None,
+    quality_preset: Optional[str] = None,
+    series_id: Optional[int] = None,
+    episode_number: Optional[int] = None,
+) -> int:
     """
     Creates a project from a human-supplied topic (skips the Trend Scout) and
     runs it in a background thread to the current end of the pipeline. Returns
     immediately with the new project's id.
     """
     with session_scope() as session:
-        project = VideoProject(status=ProjectStatus.SCRIPTING.value, niche=niche, topic=topic)
+        project = VideoProject(
+            status=ProjectStatus.SCRIPTING.value,
+            niche=niche,
+            topic=topic,
+            content_type_id=content_type_id,
+            quality_preset=quality_preset,
+            series_id=series_id,
+            episode_number=episode_number,
+        )
         session.add(project)
         session.commit()
         session.refresh(project)
@@ -106,14 +148,28 @@ def start_manual_project(topic: str, niche: str = "") -> int:
     return project_id
 
 
-def start_auto_trend_project(niche: str, audience: str) -> int:
+def start_auto_trend_project(
+    niche: str,
+    audience: str,
+    content_type_id: Optional[str] = None,
+    quality_preset: Optional[str] = None,
+    series_id: Optional[int] = None,
+    episode_number: Optional[int] = None,
+) -> int:
     """
     Creates a project with no human-supplied topic: the Trend Scout proposes
     ideas and the top-scoring one (excluding recently used topics) is picked
     automatically. Returns immediately with the new project's id.
     """
     with session_scope() as session:
-        project = VideoProject(status=ProjectStatus.IDEA_PENDING.value, niche=niche)
+        project = VideoProject(
+            status=ProjectStatus.IDEA_PENDING.value,
+            niche=niche,
+            content_type_id=content_type_id,
+            quality_preset=quality_preset,
+            series_id=series_id,
+            episode_number=episode_number,
+        )
         session.add(project)
         session.commit()
         session.refresh(project)
@@ -153,6 +209,23 @@ def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None
         _log_event(project_id, f"Trend scouting failed: {exc}", type_="error")
 
 
+_ROLLING_SUMMARY_MAX_LINES = 5
+
+
+def _append_series_summary(series_id: int, episode_number: Optional[int], topic: str) -> None:
+    with session_scope() as session:
+        series = session.get(Series, series_id)
+        if series is None:
+            return
+        label = f"Episode {episode_number}" if episode_number else "An episode"
+        lines = [line for line in series.rolling_summary.split("\n") if line]
+        lines.append(f"{label}: {topic}")
+        series.rolling_summary = "\n".join(lines[-_ROLLING_SUMMARY_MAX_LINES:])
+        series.updated_at = utcnow()
+        session.add(series)
+        session.commit()
+
+
 def _write_brief(project_id: int, topic: str, niche: str, revision_notes: Optional[str]) -> CreativeBrief:
     director = CreativeDirector(project_id)
     brief = director.write(topic=topic, niche=niche, revision_notes=revision_notes)
@@ -161,6 +234,11 @@ def _write_brief(project_id: int, topic: str, niche: str, revision_notes: Option
         project.brief = brief.model_dump()
         session.add(project)
         session.commit()
+        series_id = project.series_id
+        episode_number = project.episode_number
+
+    if series_id:
+        _append_series_summary(series_id, episode_number, topic)
     return brief
 
 
@@ -174,17 +252,45 @@ def _resolve_voice_name(project_id: int, brief: CreativeBrief) -> str:
     # TTS voice ID) would otherwise fail the render almost immediately.
     from app.services import voice as voice_service
 
-    candidate = (brief.voice_recommendation or "").strip()
-    if candidate in set(voice_service.get_all_azure_voices()):
-        return candidate
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        series = session.get(Series, project.series_id) if project and project.series_id else None
 
-    fallback = config.ui.get("voice_name", "") or _FALLBACK_VOICE
-    _log_event(
-        project_id,
-        f"Creative Director recommended an invalid voice ({candidate!r}); falling back to {fallback!r}",
-        type_="error",
-    )
-    return fallback
+    candidate = (brief.voice_recommendation or "").strip()
+    valid_voices = set(voice_service.get_all_azure_voices())
+
+    if series is not None and series.voice_id:
+        # Series continuity is a hard constraint, not a suggestion: voice
+        # drift between episodes is a continuity failure, so this overrides
+        # the Creative Director's recommendation outright rather than only
+        # falling back when the value happens to be invalid.
+        if candidate != series.voice_id:
+            _log_event(
+                project_id,
+                f"Series voice enforced: using {series.voice_id!r} instead of the "
+                f"recommended {candidate!r} to keep episode-to-episode continuity",
+            )
+        return series.voice_id
+
+    resolved = candidate if candidate in valid_voices else (config.ui.get("voice_name", "") or _FALLBACK_VOICE)
+    if candidate not in valid_voices:
+        _log_event(
+            project_id,
+            f"Creative Director recommended an invalid voice ({candidate!r}); falling back to {resolved!r}",
+            type_="error",
+        )
+
+    if series is not None and not series.voice_id:
+        # Founding episode of a new series: lock this voice in for continuity.
+        with session_scope() as session:
+            series_row = session.get(Series, series.id)
+            series_row.voice_id = resolved
+            series_row.updated_at = utcnow()
+            session.add(series_row)
+            session.commit()
+        _log_event(project_id, f"Locked series voice to {resolved!r} for future episodes")
+
+    return resolved
 
 
 def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) -> VideoParams:
@@ -349,6 +455,19 @@ def approve_and_publish(project_id: int, platforms: List[str], thumbnail_path: O
         raise RuntimeError(f"project {project_id} has no rendered video or publish package to publish")
 
     _set_status(project_id, ProjectStatus.APPROVED)
+
+    if not config.features.get("publishing_enabled", False):
+        # Publishing is on hold (see [features].publishing_enabled in
+        # config.toml): approving a project marks it complete and makes the
+        # rendered video available for download, without ever reaching
+        # Publisher.publish() or the Upload-Post API.
+        _log_event(
+            project_id,
+            "Publishing is paused (features.publishing_enabled=false); marking project complete without publishing",
+        )
+        _set_status(project_id, ProjectStatus.ARCHIVED)
+        return
+
     _log_event(project_id, f"Approved for platforms: {', '.join(platforms)}")
     thread = threading.Thread(
         target=_run_publish, args=(project_id, video_path, package, platforms, thumbnail_path), daemon=True

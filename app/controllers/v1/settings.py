@@ -68,4 +68,8 @@ def _current_settings() -> dict:
         "upload_post_configured": bool(
             config.app.get("upload_post_api_key") and config.app.get("upload_post_username")
         ),
+        # Publishing is on hold for the v2 quality redesign - approving a
+        # project marks it complete instead of publishing anywhere. See
+        # [features].publishing_enabled in config.toml.
+        "publishing_enabled": config.features.get("publishing_enabled", False),
     }

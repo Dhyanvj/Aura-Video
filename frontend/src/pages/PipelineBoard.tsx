@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, Project, Settings } from "../api";
 import { useLiveUpdates } from "../ws";
 import ProjectCard from "../components/ProjectCard";
@@ -13,6 +14,7 @@ const COLUMNS: { key: string; label: string; statuses: string[] }[] = [
 ];
 
 export default function PipelineBoard() {
+  const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
@@ -36,11 +38,11 @@ export default function PipelineBoard() {
     () => refresh(),
   );
 
-  const createProject = async () => {
+  const quickCreateProject = async () => {
     setCreating(true);
     setError(null);
     try {
-      await api.createProject(topic.trim(), niche.trim(), audience.trim());
+      await api.createProject({ topic: topic.trim(), niche: niche.trim(), audience: audience.trim() });
       setTopic("");
       setShowNewForm(false);
       refresh();
@@ -77,6 +79,13 @@ export default function PipelineBoard() {
           )}
           <button
             onClick={() => setShowNewForm((v) => !v)}
+            className="rounded border border-border bg-panel2 px-3 py-1.5 text-sm text-slate-300 hover:border-accent hover:text-white"
+            title="Skip the content-type flow: just a topic, niche, and audience"
+          >
+            Quick create
+          </button>
+          <button
+            onClick={() => navigate("/new")}
             className="rounded bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500"
           >
             + New Video
@@ -107,7 +116,7 @@ export default function PipelineBoard() {
             />
           </div>
           <button
-            onClick={createProject}
+            onClick={quickCreateProject}
             disabled={creating}
             className="rounded bg-accent px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
           >

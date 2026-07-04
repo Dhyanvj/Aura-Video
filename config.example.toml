@@ -493,3 +493,12 @@ audience = "e.g. curious 18-34 year olds"
 enabled = false
 videos_per_day = 1
 run_at = "09:00"
+
+[features]
+# Master switch for the entire publish path (Publisher.publish(), the
+# approval-gate publish thread, any scheduler auto-upload). Publishing is on
+# hold while the v2 quality redesign is in progress: approving a project
+# marks it complete and offers a download instead of publishing anywhere.
+# The Publisher agent, upload_post.py, and the approval-gate code are not
+# removed - flip this to true to re-enable the publish path once ready.
+publishing_enabled = false

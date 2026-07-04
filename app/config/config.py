@@ -158,6 +158,7 @@ def save_config():
         _cfg["agents"] = agents
         _cfg["trends"] = trends
         _cfg["schedule"] = schedule
+        _cfg["features"] = features
         f.write(toml.dumps(_cfg))
 
 
@@ -172,6 +173,13 @@ chatterbox = _cfg.get("chatterbox", {})
 agents = _cfg.get("agents", {})
 trends = _cfg.get("trends", {})
 schedule = _cfg.get("schedule", {})
+# publishing_enabled is the master switch for the entire publish path
+# (Publisher.publish(), the approval-gate publish thread, any future
+# scheduler auto-upload). Publishing is deliberately on hold: this defaults
+# to false, and the Publisher agent / upload_post.py / approval-gate code
+# stay in place, just short-circuited, so re-enabling later is a config
+# change rather than a rebuild.
+features = _cfg.get("features", {"publishing_enabled": False})
 ui = _cfg.get(
     "ui",
     {

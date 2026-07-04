@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import Path, Request
 from pydantic import BaseModel
@@ -8,7 +8,7 @@ from app.agents import orchestrator
 from app.config import config
 from app.controllers.v1.base import new_router
 from app.db import session_scope
-from app.db.models import AgentEvent, VideoProject
+from app.db.models import AgentEvent, ContentTypeTemplate, VideoProject
 from app.models.exception import HttpException
 from app.utils import utils
 
@@ -21,6 +21,14 @@ class CreateProjectRequest(BaseModel):
     topic: Optional[str] = ""
     niche: Optional[str] = ""
     audience: Optional[str] = ""
+    content_type_id: Optional[str] = None
+    quality_preset: Optional[str] = None
+    # "none" (default, one-off video), "new" (create a series, this becomes
+    # episode 1 - series_title required), or "continue" (add the next
+    # episode to an existing series - series_id required).
+    series_mode: Literal["none", "new", "continue"] = "none"
+    series_title: Optional[str] = None
+    series_id: Optional[int] = None
 
 
 class RejectProjectRequest(BaseModel):
@@ -36,17 +44,67 @@ class ApproveProjectRequest(BaseModel):
 def create_project(request: Request, body: CreateProjectRequest):
     topic = (body.topic or "").strip()
     niche = (body.niche or "").strip() or config.trends.get("niche", "")
+
+    if body.content_type_id is not None:
+        with session_scope() as session:
+            if session.get(ContentTypeTemplate, body.content_type_id) is None:
+                raise HttpException(
+                    task_id="", status_code=404, message=f"content type {body.content_type_id!r} not found"
+                )
+
+    series_id, episode_number = _resolve_series(body)
+
     if topic:
-        project_id = orchestrator.start_manual_project(topic=topic, niche=niche)
+        project_id = orchestrator.start_manual_project(
+            topic=topic,
+            niche=niche,
+            content_type_id=body.content_type_id,
+            quality_preset=body.quality_preset,
+            series_id=series_id,
+            episode_number=episode_number,
+        )
     else:
         audience = (body.audience or "").strip() or config.trends.get("audience", "")
-        project_id = orchestrator.start_auto_trend_project(niche=niche, audience=audience)
+        project_id = orchestrator.start_auto_trend_project(
+            niche=niche,
+            audience=audience,
+            content_type_id=body.content_type_id,
+            quality_preset=body.quality_preset,
+            series_id=series_id,
+            episode_number=episode_number,
+        )
     return utils.get_response(200, {"project_id": project_id})
+
+
+def _resolve_series(body: CreateProjectRequest) -> tuple:
+    if body.series_mode == "none":
+        return None, None
+
+    if body.series_mode == "new":
+        title = (body.series_title or "").strip()
+        if not title:
+            raise HttpException(task_id="", status_code=400, message="series_title is required for series_mode='new'")
+        content_type_id = body.content_type_id or "motivational"
+        series_id = orchestrator.create_series(content_type_id, title)
+        return series_id, orchestrator.next_episode_number(series_id)
+
+    # series_mode == "continue"
+    if body.series_id is None:
+        raise HttpException(task_id="", status_code=400, message="series_id is required for series_mode='continue'")
+    with session_scope() as session:
+        from app.db.models import Series
+
+        if session.get(Series, body.series_id) is None:
+            raise HttpException(task_id="", status_code=404, message=f"series {body.series_id} not found")
+    return body.series_id, orchestrator.next_episode_number(body.series_id)
 
 
 @router.post("/projects/{project_id}/approve", summary="Approve a project and publish it to the given platforms")
 def approve_project(request: Request, body: ApproveProjectRequest, project_id: int = Path(...)):
-    if not body.platforms:
+    # Platforms are only required while publishing is actually enabled - with
+    # it paused, approving just marks the project complete (see
+    # orchestrator.approve_and_publish).
+    if config.features.get("publishing_enabled", False) and not body.platforms:
         raise HttpException(task_id="", status_code=400, message="platforms must not be empty")
     try:
         orchestrator.approve_and_publish(project_id, body.platforms, body.thumbnail_path)
@@ -119,6 +177,10 @@ def _project_summary(project: VideoProject) -> dict:
         "cost_usd": project.cost_usd,
         "revision_count": project.revision_count,
         "failure_reason": project.failure_reason,
+        "content_type_id": project.content_type_id,
+        "quality_preset": project.quality_preset,
+        "series_id": project.series_id,
+        "episode_number": project.episode_number,
         "created_at": project.created_at.isoformat(),
         "updated_at": project.updated_at.isoformat(),
     }
