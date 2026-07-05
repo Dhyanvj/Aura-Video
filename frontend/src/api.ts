@@ -24,6 +24,29 @@ export interface TrendReport {
   ideas: TrendIdea[];
 }
 
+export interface SourceCitation {
+  url: string;
+  title: string;
+  published_or_accessed: string;
+}
+
+export interface KeyFact {
+  statement: string;
+  citations: SourceCitation[];
+  confidence: string; // verified | single-source | disputed | myth
+}
+
+export interface ResearchDossier {
+  topic: string;
+  why_now: string;
+  key_facts: KeyFact[];
+  disputed_points: string[];
+  suggested_angle: string;
+  sources: SourceCitation[];
+  freshness_window_hours: number | null;
+  reduced_verification: boolean;
+}
+
 export interface CreativeBrief {
   script: string;
   search_terms: string[];
@@ -41,6 +64,7 @@ export interface QAReport {
   content_policy_flags: string[];
   revision_target: string | null;
   revision_notes: string | null;
+  fact_check_flags: { sentence: string; supported: boolean; note: string }[];
 }
 
 export interface PublishPackage {
@@ -60,6 +84,7 @@ export interface Project {
   niche: string | null;
   topic: string | null;
   trend_report: TrendReport | null;
+  research_evidence: ResearchDossier | null;
   brief: CreativeBrief | null;
   qa_reports: QAReport[] | null;
   publish_package: PublishPackage | null;

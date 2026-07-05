@@ -6,7 +6,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.agents.quality_reviewer import QualityReviewer
-from app.agents.schemas import FrameFinding, QuoteOrLesson, VisionReview
+from app.agents.schemas import FactCheckFlag, FactCheckResult, FrameFinding, QuoteOrLesson, ResearchDossier, VisionReview
 from app.services.qa import TechnicalCheckResult
 
 
@@ -173,6 +173,95 @@ class TestQualityReviewerAttributionCheck(unittest.TestCase):
         ):
             report = reviewer.review(video_path="/tmp/whatever.mp4", script="script", quote_or_lesson=None)
         self.assertEqual(report.overall, "pass")
+
+
+class TestQualityReviewerFactCheck(unittest.TestCase):
+    """
+    Part 3: a Researcher dossier is now available for fact-checking the
+    script against - a hallucinated claim that drifts from what was actually
+    verified must send the video back to the Creative Director, not just be
+    silently published because the vision review looked fine.
+    """
+
+    def _review_with_fact_check(self, flags, vision_overall="pass"):
+        reviewer = QualityReviewer(project_id=None)
+        dossier = ResearchDossier(topic="an octopus fact", key_facts=[])
+        with patch(
+            "app.agents.quality_reviewer.qa_service.run_technical_checks",
+            return_value=([TechnicalCheckResult("duration_15_to_60s", True, "45.0s")], 45.0),
+        ), patch(
+            "app.agents.quality_reviewer.qa_service.extract_frames", return_value=["/tmp/frame1.jpg"]
+        ), patch.object(QualityReviewer, "_encode_image", return_value="ZmFrZQ=="), patch.object(
+            reviewer,
+            "call_json_with_content",
+            return_value=VisionReview(
+                overall=vision_overall, frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")]
+            ),
+        ), patch.object(reviewer, "call_json", return_value=FactCheckResult(flags=flags)):
+            return reviewer.review(video_path="/tmp/whatever.mp4", script="script", research_dossier=dossier)
+
+    def test_unsupported_claim_routes_to_creative_director(self):
+        report = self._review_with_fact_check(
+            [FactCheckFlag(sentence="Octopuses have nine hearts.", supported=False, note="dossier says three")]
+        )
+        self.assertEqual(report.overall, "revise")
+        self.assertEqual(report.revision_target, "creative_director")
+        self.assertIn("unsupported", report.revision_notes)
+        self.assertEqual(len(report.fact_check_flags), 1)
+
+    def test_all_supported_claims_do_not_affect_a_clean_pass(self):
+        report = self._review_with_fact_check(
+            [FactCheckFlag(sentence="Octopuses have three hearts.", supported=True)]
+        )
+        self.assertEqual(report.overall, "pass")
+        self.assertEqual(len(report.fact_check_flags), 1)
+
+    def test_no_dossier_skips_fact_check_entirely(self):
+        reviewer = QualityReviewer(project_id=None)
+        with patch(
+            "app.agents.quality_reviewer.qa_service.run_technical_checks",
+            return_value=([TechnicalCheckResult("duration_15_to_60s", True, "45.0s")], 45.0),
+        ), patch(
+            "app.agents.quality_reviewer.qa_service.extract_frames", return_value=["/tmp/frame1.jpg"]
+        ), patch.object(QualityReviewer, "_encode_image", return_value="ZmFrZQ=="), patch.object(
+            reviewer,
+            "call_json_with_content",
+            return_value=VisionReview(overall="pass", frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")]),
+        ), patch.object(reviewer, "call_json") as mock_fact_check:
+            report = reviewer.review(video_path="/tmp/whatever.mp4", script="script", research_dossier=None)
+        mock_fact_check.assert_not_called()
+        self.assertEqual(report.fact_check_flags, [])
+
+    def test_unsupported_claim_note_appended_without_overriding_an_existing_fail(self):
+        # A separate hard fail (e.g. misattributed quote) should still win as
+        # the overall verdict - the fact-check note is additive, not a demotion.
+        reviewer = QualityReviewer(project_id=None)
+        quote = QuoteOrLesson(is_quote=True, text="The obstacle is the way.", attribution="Ryan Holiday")
+        dossier = ResearchDossier(topic="t")
+        with patch(
+            "app.agents.quality_reviewer.qa_service.run_technical_checks",
+            return_value=([TechnicalCheckResult("duration_15_to_60s", True, "45.0s")], 45.0),
+        ), patch(
+            "app.agents.quality_reviewer.qa_service.extract_frames", return_value=["/tmp/frame1.jpg"]
+        ), patch.object(QualityReviewer, "_encode_image", return_value="ZmFrZQ=="), patch.object(
+            reviewer,
+            "call_json_with_content",
+            return_value=VisionReview(
+                overall="pass",
+                frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")],
+                quote_attribution_check="incorrect",
+            ),
+        ), patch.object(
+            reviewer,
+            "call_json",
+            return_value=FactCheckResult(flags=[FactCheckFlag(sentence="x", supported=False)]),
+        ):
+            report = reviewer.review(
+                video_path="/tmp/whatever.mp4", script="script", quote_or_lesson=quote, research_dossier=dossier
+            )
+        self.assertEqual(report.overall, "fail")
+        self.assertEqual(report.revision_target, "creative_director")
+        self.assertIn("unsupported", report.revision_notes)
 
 
 if __name__ == "__main__":

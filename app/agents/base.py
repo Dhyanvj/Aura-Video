@@ -1,5 +1,5 @@
 import time
-from typing import List, Optional, Type, TypeVar, Union
+from typing import List, Optional, Tuple, Type, TypeVar, Union
 
 import anthropic
 from loguru import logger
@@ -21,6 +21,7 @@ _MODEL_PRICING = {
 _DEFAULT_PRICING = _MODEL_PRICING["claude-sonnet-5"]
 
 _TOOL_NAME = "emit_result"
+_WEB_SEARCH_TOOL_NAME = "web_search"
 
 
 class AgentNotConfiguredError(RuntimeError):
@@ -209,6 +210,76 @@ class BaseAgent:
             return result
 
         raise RuntimeError(f"{self.agent_name}: failed after {max_retries} attempts: {last_error}")
+
+    def call_with_web_search(
+        self,
+        system: str,
+        user: str,
+        max_uses: int = 5,
+        max_tokens: int = 4096,
+    ) -> Tuple[str, List[dict], bool]:
+        """
+        Lets Claude research a topic using Anthropic's built-in web search
+        tool - server-executed, so a single messages.create() call can
+        involve several searches with no client-side loop needed. Returns
+        (summary_text, sources, ok):
+          - summary_text: Claude's own synthesis of what it found.
+          - sources: [{"url", "title", "published_or_accessed"}, ...] drawn
+            from every result page actually returned, deduplicated by URL.
+          - ok: False on any failure (missing key, API error, web search not
+            available on this account/plan, or no usable text produced).
+        Callers must degrade gracefully (mark reduced_verification) on
+        ok=False rather than crash - research is inherently best-effort, and
+        this is the only source-gathering path until a dedicated research
+        API is worth adding.
+        """
+        if not is_configured():
+            raise AgentNotConfiguredError("agents.anthropic_api_key is not configured in config.toml")
+
+        try:
+            self.log_event("thinking", message=f"Calling {self.model} with web search")
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+                tools=[{"type": "web_search_20250305", "name": _WEB_SEARCH_TOOL_NAME, "max_uses": max_uses}],
+            )
+        except Exception as exc:  # noqa: BLE001 - any failure here means "no usable research," not a crash
+            logger.warning(f"{self.agent_name}: web search call failed: {exc}")
+            self.log_event("error", message=f"web search failed: {exc}")
+            return "", [], False
+
+        tokens_in = response.usage.input_tokens
+        tokens_out = response.usage.output_tokens
+        cost = estimate_cost_usd(self.model, tokens_in, tokens_out)
+
+        text_parts: List[str] = []
+        sources: List[dict] = []
+        seen_urls = set()
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "web_search_tool_result" and isinstance(block.content, list):
+                for item in block.content:
+                    if item.url in seen_urls:
+                        continue
+                    seen_urls.add(item.url)
+                    sources.append(
+                        {"url": item.url, "title": item.title, "published_or_accessed": item.page_age or ""}
+                    )
+
+        summary = "\n".join(text_parts).strip()
+        ok = bool(summary)
+        self.log_event(
+            "output" if ok else "error",
+            message=f"web search {'produced' if ok else 'produced no'} usable text ({len(sources)} sources)",
+            payload={"sources": sources},
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            cost_usd=cost,
+        )
+        return summary, sources, ok
 
     @staticmethod
     def _sleep_backoff(attempt: int) -> None:

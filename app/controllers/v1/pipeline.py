@@ -168,6 +168,7 @@ def _project_summary(project: VideoProject) -> dict:
         "niche": project.niche,
         "topic": project.topic,
         "trend_report": project.trend_report,
+        "research_evidence": project.research_evidence,
         "brief": project.brief,
         "qa_reports": project.qa_reports,
         "publish_package": project.publish_package,

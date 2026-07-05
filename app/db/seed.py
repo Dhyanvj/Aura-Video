@@ -30,7 +30,10 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
         "voice_style": "warm, confident narrator",
         "subtitle_theme": "minimal_elegant",
         "music_palette": "cinematic_uplifting",
-        "research_required": False,
+        # No freshness window - a quote/lesson isn't time-sensitive - but it
+        # still needs the Researcher's wording+attribution verification pass
+        # before Creative Director writes around it.
+        "research_required": True,
         "freshness_window_hours": None,
         "series_capable": True,
         "default_quality_preset": "standard",
@@ -45,7 +48,7 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
         "voice_style": "playful, energetic",
         "subtitle_theme": "bold_playful",
         "music_palette": "upbeat_bright",
-        "research_required": False,
+        "research_required": True,
         "freshness_window_hours": None,
         "series_capable": True,
         "default_quality_preset": "standard",
@@ -129,6 +132,16 @@ _MIGRATIONS = [
 ]
 
 
+# Part 3: Motivational and Fun Facts now also require a Researcher pass
+# (quote/attribution verification, fact verification) even though neither
+# has a freshness window. Guarded on "still the old False default" rather
+# than a label match, since Part 2 already retitled the motivational row on
+# upgraded databases - research_required has no other historical value to
+# key off, so this is the best cheap signal available that a user hasn't
+# deliberately turned it off by hand.
+_RESEARCH_REQUIRED_MIGRATION_IDS = ("motivational", "fun_facts")
+
+
 def seed_content_types(session) -> None:
     """Insert any built-in template whose id isn't already present. Never
     overwrites an existing row, so user edits survive restarts/upgrades."""
@@ -140,6 +153,7 @@ def seed_content_types(session) -> None:
     session.commit()
 
     _apply_migrations(session)
+    _apply_research_required_migration(session)
 
 
 def _apply_migrations(session) -> None:
@@ -151,6 +165,19 @@ def _apply_migrations(session) -> None:
             continue
         for field, value in migration["set"].items():
             setattr(template, field, value)
+        template.updated_at = utcnow()
+        session.add(template)
+    session.commit()
+
+
+def _apply_research_required_migration(session) -> None:
+    from app.db.models import utcnow
+
+    for content_type_id in _RESEARCH_REQUIRED_MIGRATION_IDS:
+        template = session.get(ContentTypeTemplate, content_type_id)
+        if template is None or template.research_required:
+            continue
+        template.research_required = True
         template.updated_at = utcnow()
         session.add(template)
     session.commit()

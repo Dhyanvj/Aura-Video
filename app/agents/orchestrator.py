@@ -9,13 +9,22 @@ from app.agents.creative_director import CreativeDirector
 from app.agents.producer import Producer
 from app.agents.publisher import Publisher
 from app.agents.quality_reviewer import QualityReviewer
-from app.agents.schemas import CreativeBrief, QAReport
+from app.agents.researcher import Researcher
+from app.agents.schemas import CreativeBrief, QAReport, ResearchDossier, SourceCitation
 from app.agents.trend_scout import TrendScout
 from app.config import config
 from app.db import session_scope
-from app.db.models import AgentEvent, ProjectStatus, Series, VideoProject, utcnow
+from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
 from app.services.ws_manager import broadcast_event, broadcast_status
+
+# Content types where a news story older than its freshness window, or one
+# that couldn't be corroborated from independent sources, must never reach a
+# script - "never a vague roundup" per spec. Motivational/fun_facts also
+# require research, but a thin research pass there should make the Creative
+# Director more conservative (it's already instructed to fall back to a life
+# lesson over a risky quote), not hard-fail the project outright.
+_NEWS_CONTENT_TYPES = {"ai_news", "world_news"}
 
 # Statuses a project can be resumed from on startup after a crash. Any project
 # still in one of these (and with a topic already picked) when the process
@@ -23,6 +32,8 @@ from app.services.ws_manager import broadcast_event, broadcast_status
 # than resuming a specific sub-step.
 _RESUMABLE_STATUSES = {
     ProjectStatus.IDEA_READY.value,
+    ProjectStatus.RESEARCHING.value,
+    ProjectStatus.RESEARCH_READY.value,
     ProjectStatus.SCRIPTING.value,
     ProjectStatus.SCRIPT_READY.value,
     ProjectStatus.PRODUCING.value,
@@ -75,16 +86,86 @@ def _recent_performance_notes(niche: str, limit: int = 5) -> list[str]:
     return notes
 
 
-def _recent_topics() -> list[str]:
-    # Trend Scout must not repropose a topic used in the last 30 projects.
+def _recent_topics(content_type_id: Optional[str] = None, series_id: Optional[int] = None) -> list[str]:
+    """
+    Dedupe scope depends on what's given: a series must never repeat one of
+    its own episode topics, and (absent a series) a content type must not
+    repeat a topic from another project of the same type - but there's no
+    reason a "fun_facts" episode's dedupe window should be polluted by an
+    unrelated "motivational" topic, or vice versa. Called with neither for
+    legacy/global callers, which keeps the original cross-everything window.
+    """
     with session_scope() as session:
-        rows = session.exec(
-            select(VideoProject.topic)
-            .where(VideoProject.topic.is_not(None))
-            .order_by(VideoProject.created_at.desc())
-            .limit(_RECENT_TOPICS_LIMIT)
-        ).all()
+        query = select(VideoProject.topic).where(VideoProject.topic.is_not(None))
+        if series_id is not None:
+            query = query.where(VideoProject.series_id == series_id)
+        elif content_type_id is not None:
+            query = query.where(VideoProject.content_type_id == content_type_id)
+        rows = session.exec(query.order_by(VideoProject.created_at.desc()).limit(_RECENT_TOPICS_LIMIT)).all()
     return [t for t in rows if t]
+
+
+def _get_content_type_info(content_type_id: Optional[str]) -> Optional[dict]:
+    if not content_type_id:
+        return None
+    with session_scope() as session:
+        template = session.get(ContentTypeTemplate, content_type_id)
+        if template is None:
+            return None
+        return {
+            "research_required": template.research_required,
+            "freshness_window_hours": template.freshness_window_hours,
+        }
+
+
+def _run_research(
+    project_id: int,
+    content_type_id: str,
+    topic_hint: str,
+    niche: str,
+    series_id: Optional[int],
+    freshness_window_hours: Optional[int],
+) -> ResearchDossier:
+    researcher = Researcher(project_id)
+    dossier = researcher.research(
+        content_type_id=content_type_id,
+        topic_hint=topic_hint,
+        niche=niche,
+        recent_topics=_recent_topics(content_type_id=content_type_id, series_id=series_id),
+        performance_notes=_recent_performance_notes(niche),
+        freshness_window_hours=freshness_window_hours,
+    )
+    _log_event(
+        project_id,
+        f"Researcher: {'reduced verification' if dossier.reduced_verification else f'{len(dossier.sources)} source(s)'} "
+        f"for {dossier.topic!r}",
+        type_="error" if dossier.reduced_verification else "output",
+    )
+    return dossier
+
+
+def _store_research_evidence(project_id: int, dossier: ResearchDossier) -> None:
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        project.research_evidence = dossier.model_dump()
+        session.add(project)
+        session.commit()
+
+
+def _dossier_from_trend_idea(idea) -> ResearchDossier:
+    """
+    Trending Now doesn't need a Researcher pass - Trend Scout's own YouTube/
+    pytrends signals already ARE the evidence for "where this is trending" -
+    so this just reshapes what Trend Scout already found into the same
+    dossier shape everything else stores as research_evidence, for a
+    consistent Project Detail UI.
+    """
+    return ResearchDossier(
+        topic=idea.title,
+        why_now=idea.why_trending,
+        sources=[SourceCitation(url=e, title=e) for e in idea.evidence if e.startswith("http")],
+        suggested_angle=idea.suggested_format,
+    )
 
 
 def create_series(content_type_id: str, title: str, style_guide: Optional[dict] = None) -> int:
@@ -186,11 +267,59 @@ def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None
             raise agent_base.AgentNotConfiguredError(
                 "agents.anthropic_api_key is not configured; cannot run the Trend Scout"
             )
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            content_type_id = project.content_type_id
+            series_id = project.series_id
+
+        content_type_info = _get_content_type_info(content_type_id)
+
+        if content_type_info and content_type_info["research_required"]:
+            # Trend Scout's YouTube/pytrends signals answer "what's trending" -
+            # they can't tell you a verified quote or a fresh, corroborated
+            # news story. For these content types the Researcher IS the topic
+            # source in autopilot, not just a verification pass afterward.
+            _set_status(project_id, ProjectStatus.RESEARCHING)
+            dossier = _run_research(
+                project_id, content_type_id, "", niche, series_id, content_type_info["freshness_window_hours"]
+            )
+            _store_research_evidence(project_id, dossier)
+
+            if dossier.reduced_verification:
+                # The spec's autopilot evidence gate: an idea without evidence
+                # can't be auto-picked. Unlike the Trend-Scout path below,
+                # there's no ranked ideas list here to leave for manual
+                # selection via the Trends page - the Researcher only ever
+                # proposes one candidate - so this fails the project with an
+                # actionable reason (retry, or start a manual-topic project
+                # for this content type) rather than a silent auto-continue.
+                _set_status(
+                    project_id,
+                    ProjectStatus.FAILED,
+                    failure_reason=(
+                        "Autopilot could not verify a topic from independent sources for this content "
+                        "type; retry, or start a project with a manually-chosen topic instead of "
+                        "auto-picking without evidence."
+                    ),
+                )
+                _log_event(
+                    project_id,
+                    "Research produced no verifiable topic; autopilot refuses to auto-pick without evidence",
+                    type_="error",
+                )
+                return
+
+            _set_status(project_id, ProjectStatus.RESEARCH_READY, topic=dossier.topic)
+            _log_event(project_id, f"Researcher proposed the topic {dossier.topic!r} with verified evidence")
+            _run_pipeline(project_id, dossier.topic, niche, dossier=dossier)
+            return
+
         scout = TrendScout(project_id)
         report = scout.scout(
             niche=niche,
             audience=audience,
-            recent_topics=_recent_topics(),
+            recent_topics=_recent_topics(content_type_id=content_type_id, series_id=series_id),
             performance_notes=_recent_performance_notes(niche),
         )
         with session_scope() as session:
@@ -199,10 +328,32 @@ def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None
             session.add(project)
             session.commit()
 
-        best = max(report.ideas, key=lambda idea: idea.opportunity_score)
+        # Autopilot evidence gate: an idea with no supporting evidence cannot
+        # be auto-picked, even if it scores highest - only consider ideas
+        # Trend Scout actually backed with something (a link, a stat, a
+        # signal), and leave the project idle for manual selection via the
+        # Trends page if none qualify.
+        eligible = [idea for idea in report.ideas if idea.evidence]
+        if not eligible:
+            _log_event(
+                project_id,
+                "No trend idea had supporting evidence; autopilot refuses to auto-pick without "
+                "evidence - left idle for manual selection from the Trends page",
+                type_="error",
+            )
+            _set_status(project_id, ProjectStatus.IDEA_PENDING)
+            return
+
+        best = max(eligible, key=lambda idea: idea.opportunity_score)
         _log_event(project_id, f"Trend Scout picked {best.title!r} (opportunity score {best.opportunity_score})")
+
+        dossier = None
+        if content_type_id == "trending_now":
+            dossier = _dossier_from_trend_idea(best)
+            _store_research_evidence(project_id, dossier)
+
         _set_status(project_id, ProjectStatus.IDEA_READY, topic=best.title)
-        _run_pipeline(project_id, best.title, niche)
+        _run_pipeline(project_id, best.title, niche, dossier=dossier)
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
         logger.exception(f"project {project_id} trend scouting failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
@@ -226,14 +377,24 @@ def _append_series_summary(series_id: int, episode_number: Optional[int], topic:
         session.commit()
 
 
-def _write_brief(project_id: int, topic: str, niche: str, revision_notes: Optional[str]) -> CreativeBrief:
+def _write_brief(
+    project_id: int,
+    topic: str,
+    niche: str,
+    revision_notes: Optional[str],
+    dossier: Optional[ResearchDossier] = None,
+) -> CreativeBrief:
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         content_type_id = project.content_type_id if project else None
 
     director = CreativeDirector(project_id)
     brief = director.write(
-        topic=topic, niche=niche, revision_notes=revision_notes, content_type_id=content_type_id
+        topic=topic,
+        niche=niche,
+        revision_notes=revision_notes,
+        content_type_id=content_type_id,
+        research_dossier=dossier,
     )
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
@@ -337,26 +498,75 @@ def _prepare_publish_package(project_id: int, brief: CreativeBrief, video_path: 
         session.commit()
 
 
-def _run_pipeline(project_id: int, topic: str, niche: str = "", revision_notes: Optional[str] = None) -> None:
+def _run_pipeline(
+    project_id: int,
+    topic: str,
+    niche: str = "",
+    revision_notes: Optional[str] = None,
+    dossier: Optional[ResearchDossier] = None,
+) -> None:
     try:
         if not agent_base.is_configured():
             raise agent_base.AgentNotConfiguredError(
                 "agents.anthropic_api_key is not configured; cannot run the Creative Director"
             )
 
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            content_type_id = project.content_type_id
+            series_id = project.series_id
+            stored_evidence = project.research_evidence
+
+        content_type_info = _get_content_type_info(content_type_id)
+
+        if content_type_info and content_type_info["research_required"] and dossier is None:
+            if revision_notes and stored_evidence:
+                # Revision retry (script-level, e.g. from retry_with_revision
+                # or a QA "revise" verdict): the underlying facts/quote are
+                # still valid, only the narrative needs a rewrite - reuse
+                # what was already verified instead of re-researching (and
+                # re-billing) on every revision loop.
+                dossier = ResearchDossier.model_validate(stored_evidence)
+            else:
+                # Manual-topic project with a content type that still needs
+                # verification (e.g. a human-typed quote or fact): the human's
+                # topic is kept as-is and passed to the Researcher as a hint
+                # to verify/ground, never overridden by what comes back.
+                _set_status(project_id, ProjectStatus.RESEARCHING, topic=topic)
+                dossier = _run_research(
+                    project_id, content_type_id, topic, niche, series_id,
+                    content_type_info["freshness_window_hours"],
+                )
+                _store_research_evidence(project_id, dossier)
+                _set_status(project_id, ProjectStatus.RESEARCH_READY, topic=topic)
+
+            if dossier.reduced_verification and content_type_id in _NEWS_CONTENT_TYPES:
+                _set_status(
+                    project_id,
+                    ProjectStatus.FAILED,
+                    failure_reason=(
+                        "Research could not verify this story from independent sources within the "
+                        "required freshness window; refusing to script an unverified news claim."
+                    ),
+                )
+                _log_event(project_id, "Reduced verification on a news type is a hard fail", type_="error")
+                return
+
         _set_status(project_id, ProjectStatus.SCRIPTING, topic=topic)
-        brief = _write_brief(project_id, topic, niche, revision_notes)
+        brief = _write_brief(project_id, topic, niche, revision_notes, dossier)
         _set_status(project_id, ProjectStatus.SCRIPT_READY)
         _log_event(project_id, "Creative Director produced a script and brief")
 
-        _produce_and_review(project_id, topic, niche, brief)
+        _produce_and_review(project_id, topic, niche, brief, dossier)
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
         logger.exception(f"project {project_id} failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
         _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
 
 
-def _produce_and_review(project_id: int, topic: str, niche: str, brief: CreativeBrief) -> None:
+def _produce_and_review(
+    project_id: int, topic: str, niche: str, brief: CreativeBrief, dossier: Optional[ResearchDossier] = None
+) -> None:
     """
     Renders `brief` and reviews it. On a "revise" verdict, either loops back
     through the full Creative Director (script-level problems) or - for
@@ -383,6 +593,7 @@ def _produce_and_review(project_id: int, topic: str, niche: str, brief: Creative
         subtitle_path=final_state.get("subtitle_path"),
         expected_audio_duration=final_state.get("audio_duration"),
         quote_or_lesson=brief.quote_or_lesson,
+        research_dossier=dossier,
     )
     _append_qa_report(project_id, qa_report)
 
@@ -435,7 +646,7 @@ def _produce_and_review(project_id: int, topic: str, niche: str, brief: Creative
             f"{qa_report.revision_notes}",
         )
         revised_brief = _revise_search_terms(project_id, niche, brief, qa_report.revision_notes or "")
-        _produce_and_review(project_id, topic, niche, revised_brief)
+        _produce_and_review(project_id, topic, niche, revised_brief, dossier)
         return
 
     _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=next_revision_count)
@@ -443,7 +654,7 @@ def _produce_and_review(project_id: int, topic: str, niche: str, brief: Creative
         project_id,
         f"QA requested a revision ({next_revision_count}/{_max_revisions()}): {qa_report.revision_notes}",
     )
-    _run_pipeline(project_id, topic, niche, qa_report.revision_notes)
+    _run_pipeline(project_id, topic, niche, qa_report.revision_notes, dossier=dossier)
 
 
 def _revise_search_terms(project_id: int, niche: str, brief: CreativeBrief, revision_notes: str) -> CreativeBrief:

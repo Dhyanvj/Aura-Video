@@ -22,6 +22,37 @@ class MetadataDraft(BaseModel):
     hook_variants: List[str] = Field(default_factory=list)
 
 
+class SourceCitation(BaseModel):
+    url: str
+    title: str
+    published_or_accessed: str = ""  # a date/recency string if known (e.g. "2026-07-04" or "3 hours ago")
+
+
+class KeyFact(BaseModel):
+    statement: str
+    citations: List[SourceCitation] = Field(default_factory=list)
+    # verified = corroborated by >=2 independent sources; single-source = only
+    # one source found; disputed = sources conflict; myth = a commonly
+    # repeated claim the search itself contradicts - never used as a script's
+    # spine fact.
+    confidence: str = "single-source"  # verified | single-source | disputed | myth
+
+
+class ResearchDossier(BaseModel):
+    topic: str
+    why_now: str = ""  # one line: why this topic, for a human skimming Project Detail
+    key_facts: List[KeyFact] = Field(default_factory=list)
+    disputed_points: List[str] = Field(default_factory=list)
+    suggested_angle: str = ""
+    sources: List[SourceCitation] = Field(default_factory=list)
+    freshness_window_hours: Optional[int] = None
+    # True whenever web search failed, returned nothing usable, or wasn't
+    # available at all - content types that require verified sources (news)
+    # treat this as an automatic QA fail rather than trusting an unverified
+    # script.
+    reduced_verification: bool = False
+
+
 class QuoteOrLesson(BaseModel):
     is_quote: bool  # True = a real, attributed quote; False = an original life lesson (no attribution)
     text: str  # exact wording, spoken verbatim as part of the script
@@ -68,9 +99,20 @@ class VisionReview(BaseModel):
     revision_target: Optional[str] = None  # creative_director | producer
     revision_notes: Optional[str] = None
     # Only set when a quote was supplied for the reviewer to check, from the
-    # model's own knowledge (no independent source lookup yet - that's the
-    # Researcher agent's job once it exists).
+    # model's own training knowledge. This is independent of (and runs even
+    # without) a Researcher dossier - it's a defense-in-depth check, not a
+    # substitute for the dossier-based fact_check_flags below.
     quote_attribution_check: Optional[str] = None  # correct | incorrect | uncertain
+
+
+class FactCheckFlag(BaseModel):
+    sentence: str
+    supported: bool
+    note: str = ""
+
+
+class FactCheckResult(BaseModel):
+    flags: List[FactCheckFlag] = Field(default_factory=list)
 
 
 class QAReport(BaseModel):
@@ -80,6 +122,7 @@ class QAReport(BaseModel):
     content_policy_flags: List[str] = Field(default_factory=list)
     revision_target: Optional[str] = None
     revision_notes: Optional[str] = None
+    fact_check_flags: List[FactCheckFlag] = Field(default_factory=list)
 
 
 class PlatformVariant(BaseModel):

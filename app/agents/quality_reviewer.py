@@ -3,8 +3,17 @@ import shutil
 from typing import Optional
 
 from app.agents.base import BaseAgent
-from app.agents.schemas import QAReport, QuoteOrLesson, TechnicalCheck, VisionReview
+from app.agents.schemas import (
+    FactCheckFlag,
+    FactCheckResult,
+    QAReport,
+    QuoteOrLesson,
+    ResearchDossier,
+    TechnicalCheck,
+    VisionReview,
+)
 from app.services import qa as qa_service
+from app.utils import utils
 
 _SYSTEM_PROMPT = """You are the Quality Reviewer for a short-form vertical video pipeline.
 You are given several evenly-spaced frames from a rendered video, in chronological order,
@@ -32,6 +41,16 @@ either way. Err toward "uncertain" rather than "correct" when in doubt - a wrong
 misattribution is worse than a false alarm."""
 
 
+_FACT_CHECK_SYSTEM_PROMPT = """Compare the video script against the verified research dossier a Researcher
+already produced for this topic. For each sentence in the script that states a specific fact, name, date,
+number, or claim, check whether it's actually supported by the dossier's key_facts (or, for a quote/lesson
+type, whether the centerpiece matches the dossier's verified quote/lesson). List every unsupported sentence
+as a flag with supported=false and a short note explaining the mismatch; a sentence that's just narration,
+framing, or opinion (no factual claim) doesn't need a flag. If the dossier itself has
+reduced_verification=true or lists disputed_points, treat any script sentence that states one of those
+points as settled fact as unsupported too - the script should hedge, not assert."""
+
+
 # Technical checks that only a script change can fix - routing these to
 # "producer" would ask Producer to re-render with different footage, which
 # does nothing about spoken duration and would just fail the same check
@@ -50,6 +69,7 @@ class QualityReviewer(BaseAgent):
         subtitle_path: Optional[str] = None,
         expected_audio_duration: Optional[float] = None,
         quote_or_lesson: Optional[QuoteOrLesson] = None,
+        research_dossier: Optional[ResearchDossier] = None,
     ) -> QAReport:
         technical_checks, duration = qa_service.run_technical_checks(
             video_path, subtitle_path, expected_audio_duration
@@ -101,10 +121,11 @@ class QualityReviewer(BaseAgent):
             # A misattributed quote is a hard fail per spec, not a fixable
             # detail Producer can patch with different footage - only a
             # rewrite (a different quote, or falling back to a life lesson)
-            # can fix this, so it always routes to creative_director. There's
-            # no independent source lookup yet (that's the Researcher agent),
-            # so this is the model's own knowledge - "uncertain" is treated
-            # as unsafe to publish, same as a confirmed wrong attribution.
+            # can fix this, so it always routes to creative_director. This is
+            # the model's own training knowledge, independent of (and in
+            # addition to) the dossier-based fact-check below - "uncertain" is
+            # treated as unsafe to publish, same as a confirmed wrong
+            # attribution.
             overall = "fail" if vision.quote_attribution_check == "incorrect" else "revise"
             revision_target = "creative_director"
             note = (
@@ -114,6 +135,20 @@ class QualityReviewer(BaseAgent):
             )
             revision_notes = f"{revision_notes} {note}".strip() if revision_notes else note
 
+        fact_check_flags: list[FactCheckFlag] = []
+        if research_dossier is not None:
+            fact_check_flags = self._run_fact_check(script, research_dossier)
+            unsupported = [f for f in fact_check_flags if not f.supported]
+            if unsupported:
+                note = (
+                    f"Fact-check against verified research found {len(unsupported)} unsupported "
+                    "claim(s): " + "; ".join(f'"{f.sentence}"' for f in unsupported[:3])
+                )
+                if overall == "pass":
+                    overall = "revise"
+                    revision_target = "creative_director"
+                revision_notes = f"{revision_notes} {note}".strip() if revision_notes else note
+
         report = QAReport(
             overall=overall,
             technical_checks=[TechnicalCheck(name=c.name, passed=c.passed, detail=c.detail) for c in technical_checks],
@@ -121,9 +156,22 @@ class QualityReviewer(BaseAgent):
             content_policy_flags=vision.content_policy_flags,
             revision_target=revision_target,
             revision_notes=revision_notes,
+            fact_check_flags=fact_check_flags,
         )
         self.log_event("output", message=f"QA verdict: {report.overall}", payload=report.model_dump())
         return report
+
+    def _run_fact_check(self, script: str, research_dossier: ResearchDossier) -> list[FactCheckFlag]:
+        payload = {"script": script, "research_dossier": research_dossier.model_dump()}
+        result = self.call_json(
+            system=_FACT_CHECK_SYSTEM_PROMPT, user=utils.to_json(payload), response_model=FactCheckResult
+        )
+        self.log_event(
+            "tool_call",
+            message=f"Fact-check against research dossier: {len(result.flags)} flag(s)",
+            payload={"flags": [f.model_dump() for f in result.flags]},
+        )
+        return result.flags
 
     def _run_vision_review(
         self,

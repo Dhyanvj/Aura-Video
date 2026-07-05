@@ -60,6 +60,66 @@ export default function ProjectDetail() {
             </section>
           )}
 
+          {project.research_evidence && (
+            <section className="rounded-lg border border-border bg-panel p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-slate-200">Researcher — Evidence</h2>
+                {project.research_evidence.reduced_verification && (
+                  <span className="rounded bg-rose-700 px-2 py-0.5 text-xs font-medium text-white">
+                    reduced verification
+                  </span>
+                )}
+              </div>
+              <p className="text-sm font-medium text-slate-100">{project.research_evidence.topic}</p>
+              {project.research_evidence.why_now && (
+                <p className="mt-1 text-xs text-slate-400">{project.research_evidence.why_now}</p>
+              )}
+              {project.research_evidence.key_facts.length > 0 && (
+                <ul className="mt-3 flex flex-col gap-1.5 text-xs">
+                  {project.research_evidence.key_facts.map((fact, i) => (
+                    <li key={i} className="rounded border border-border bg-panel2 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-slate-200">{fact.statement}</span>
+                        <span
+                          className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                            fact.confidence === "verified"
+                              ? "bg-emerald-700 text-white"
+                              : fact.confidence === "myth" || fact.confidence === "disputed"
+                                ? "bg-rose-700 text-white"
+                                : "bg-amber-700 text-white"
+                          }`}
+                        >
+                          {fact.confidence}
+                        </span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {project.research_evidence.disputed_points.length > 0 && (
+                <div className="mt-2 text-xs text-amber-300">
+                  Disputed: {project.research_evidence.disputed_points.join("; ")}
+                </div>
+              )}
+              {project.research_evidence.sources.length > 0 && (
+                <div className="mt-3 flex flex-col gap-1 text-xs text-slate-400">
+                  {project.research_evidence.sources.map((source, i) => (
+                    <a
+                      key={i}
+                      href={source.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="truncate text-sky-400 hover:underline"
+                    >
+                      {source.title || source.url}
+                      {source.published_or_accessed ? ` — ${source.published_or_accessed}` : ""}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+
           {project.trend_report && (
             <section className="rounded-lg border border-border bg-panel p-4">
               <h2 className="mb-3 text-sm font-semibold text-slate-200">Trend Scout — Ranked Ideas</h2>
@@ -138,6 +198,17 @@ export default function ProjectDetail() {
                       <p className="text-xs text-amber-300">
                         Revision target: {report.revision_target} — {report.revision_notes}
                       </p>
+                    )}
+                    {report.fact_check_flags?.filter((f) => !f.supported).length > 0 && (
+                      <ul className="mt-2 flex flex-col gap-1 text-xs text-rose-300">
+                        {report.fact_check_flags
+                          .filter((f) => !f.supported)
+                          .map((f, j) => (
+                            <li key={j}>
+                              Unsupported: "{f.sentence}"{f.note ? ` — ${f.note}` : ""}
+                            </li>
+                          ))}
+                      </ul>
                     )}
                   </div>
                 ))}

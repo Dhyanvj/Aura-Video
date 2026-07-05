@@ -16,6 +16,8 @@ def utcnow() -> datetime:
 class ProjectStatus(str, Enum):
     IDEA_PENDING = "IDEA_PENDING"
     IDEA_READY = "IDEA_READY"
+    RESEARCHING = "RESEARCHING"
+    RESEARCH_READY = "RESEARCH_READY"
     SCRIPTING = "SCRIPTING"
     SCRIPT_READY = "SCRIPT_READY"
     PRODUCING = "PRODUCING"
@@ -39,6 +41,7 @@ class VideoProject(SQLModel, table=True):
     topic: Optional[str] = None
 
     trend_report: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    research_evidence: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # ResearchDossier.model_dump()
     brief: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     video_params: Optional[dict] = Field(default=None, sa_column=Column(JSON))
 

@@ -12,7 +12,9 @@ from sqlmodel import create_engine
 import app.db.session as db_session
 from app.agents import base as agent_base
 from app.agents import orchestrator
-from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport
+from app.agents.researcher import Researcher
+from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport, ResearchDossier, TrendIdea, TrendReport
+from app.agents.trend_scout import TrendScout
 from app.db import session_scope
 from app.db.models import ProjectStatus, VideoProject
 from app.models import const
@@ -292,6 +294,275 @@ class TestOrchestratorStateMachine(unittest.TestCase):
                 return status
             time.sleep(0.1)
         self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
+
+
+class TestOrchestratorResearchWiring(unittest.TestCase):
+    """
+    Part 3: content types with research_required must get a real,
+    per-content-type-verified topic (from the Researcher, not a generic
+    trend query), store it as research_evidence, and refuse to auto-pick an
+    unverified topic in autopilot.
+    """
+
+    def setUp(self):
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        os.remove(self._db_path)
+
+    def _get_project(self, project_id: int) -> VideoProject:
+        with session_scope() as session:
+            return session.get(VideoProject, project_id)
+
+    def _wait_for_status(self, project_id: int, terminal_statuses: set, timeout: float = 30.0):
+        import time
+
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            status = self._get_project(project_id).status
+            if status in terminal_statuses:
+                return status
+            time.sleep(0.1)
+        self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
+
+    def test_manual_project_keeps_human_topic_and_stores_researcher_dossier(self):
+        # _produce_and_review is stubbed out here since these tests only
+        # care about research/scripting wiring, not the render pipeline -
+        # letting a real Producer run would hit real Pexels/TTS calls.
+        dossier = ResearchDossier(topic="octopuses have three hearts", sources=[])
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ) as mock_research, patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ) as mock_write, patch.object(orchestrator, "_produce_and_review"):
+            project_id = orchestrator.start_manual_project(
+                topic="my chosen fact", niche="ocean", content_type_id="fun_facts"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        # The human's topic is never overridden by what the Researcher returns.
+        self.assertEqual(project.topic, "my chosen fact")
+        self.assertEqual(project.research_evidence["topic"], "octopuses have three hearts")
+        mock_research.assert_called_once()
+        self.assertEqual(mock_write.call_args.kwargs["research_dossier"].topic, "octopuses have three hearts")
+
+    def test_manual_project_reduced_verification_hard_fails_for_news_content_type(self):
+        dossier = ResearchDossier(topic="unclear", reduced_verification=True)
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ), patch("app.agents.creative_director.CreativeDirector.write") as mock_write:
+            project_id = orchestrator.start_manual_project(topic="a story", niche="tech", content_type_id="ai_news")
+            self._wait_for_status(project_id, {ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.FAILED.value)
+        self.assertIn("could not verify", project.failure_reason)
+        mock_write.assert_not_called()
+
+    def test_manual_project_reduced_verification_does_not_hard_fail_non_news_content_type(self):
+        dossier = ResearchDossier(topic="a life lesson", reduced_verification=True)
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ) as mock_write, patch.object(orchestrator, "_produce_and_review"):
+            project_id = orchestrator.start_manual_project(
+                topic="discipline", niche="self-improvement", content_type_id="motivational"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.SCRIPT_READY.value)
+        mock_write.assert_called_once()
+
+    def test_auto_trend_pipeline_skips_trend_scout_for_research_required_content_type(self):
+        dossier = ResearchDossier(topic="a verified fun fact")
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ), patch.object(TrendScout, "scout") as mock_scout, patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch.object(orchestrator, "_produce_and_review"):
+            project_id = orchestrator.start_auto_trend_project(
+                niche="ocean", audience="general", content_type_id="fun_facts"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        mock_scout.assert_not_called()
+        project = self._get_project(project_id)
+        self.assertEqual(project.topic, "a verified fun fact")
+        self.assertEqual(project.research_evidence["topic"], "a verified fun fact")
+
+    def test_auto_trend_pipeline_fails_without_auto_picking_when_research_unverified(self):
+        dossier = ResearchDossier(topic="unclear", reduced_verification=True)
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ), patch("app.agents.creative_director.CreativeDirector.write") as mock_write:
+            project_id = orchestrator.start_auto_trend_project(
+                niche="tech", audience="general", content_type_id="ai_news"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.FAILED.value)
+        self.assertIn("without evidence", project.failure_reason)
+        mock_write.assert_not_called()
+
+    def test_auto_trend_pipeline_evidence_gate_leaves_project_idle_when_no_idea_has_evidence(self):
+        report = TrendReport(
+            ideas=[
+                TrendIdea(
+                    title="no evidence idea",
+                    why_trending="just a guess",
+                    evidence=[],
+                    target_emotion="curiosity",
+                    estimated_competition="low",
+                    suggested_format="fact",
+                    opportunity_score=90,
+                )
+            ]
+        )
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            TrendScout, "scout", return_value=report
+        ), patch("app.agents.creative_director.CreativeDirector.write") as mock_write:
+            project_id = orchestrator.start_auto_trend_project(niche="tech", audience="general")
+            self._wait_for_status(project_id, {ProjectStatus.IDEA_PENDING.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.IDEA_PENDING.value)
+        mock_write.assert_not_called()
+
+    def test_auto_trend_pipeline_ignores_evidence_free_ideas_even_if_highest_scoring(self):
+        report = TrendReport(
+            ideas=[
+                TrendIdea(
+                    title="unbacked but flashy",
+                    why_trending="sounds fun",
+                    evidence=[],
+                    target_emotion="excitement",
+                    estimated_competition="low",
+                    suggested_format="fact",
+                    opportunity_score=99,
+                ),
+                TrendIdea(
+                    title="backed by a real signal",
+                    why_trending="actually trending",
+                    evidence=["https://example.com/proof"],
+                    target_emotion="curiosity",
+                    estimated_competition="medium",
+                    suggested_format="fact",
+                    opportunity_score=40,
+                ),
+            ]
+        )
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            TrendScout, "scout", return_value=report
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch.object(orchestrator, "_produce_and_review"):
+            project_id = orchestrator.start_auto_trend_project(niche="tech", audience="general")
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.topic, "backed by a real signal")
+
+    def test_trending_now_stores_trend_scout_evidence_as_research_evidence(self):
+        report = TrendReport(
+            ideas=[
+                TrendIdea(
+                    title="a viral challenge",
+                    why_trending="spiking on YouTube this week",
+                    evidence=["https://youtube.com/trending-signal"],
+                    target_emotion="excitement",
+                    estimated_competition="high",
+                    suggested_format="story",
+                    opportunity_score=85,
+                )
+            ]
+        )
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            TrendScout, "scout", return_value=report
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch.object(orchestrator, "_produce_and_review"):
+            project_id = orchestrator.start_auto_trend_project(
+                niche="pop culture", audience="general", content_type_id="trending_now"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.research_evidence["topic"], "a viral challenge")
+        self.assertEqual(project.research_evidence["sources"][0]["url"], "https://youtube.com/trending-signal")
+
+    def test_revision_retry_reuses_stored_dossier_instead_of_recalling_researcher(self):
+        dossier = ResearchDossier(topic="a verified fact")
+        qa_reports = [
+            QAReport(
+                overall="revise",
+                technical_checks=[],
+                frame_findings=[],
+                revision_target="creative_director",
+                revision_notes="tighten the hook",
+            ),
+            QAReport(overall="pass", technical_checks=[], frame_findings=[]),
+        ]
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ) as mock_research, patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ) as mock_write, patch(
+            "app.agents.producer.task_service.start", side_effect=_fake_render_success
+        ), patch(
+            "app.agents.quality_reviewer.QualityReviewer.review", side_effect=qa_reports
+        ), patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            project_id = orchestrator.start_manual_project(
+                topic="a verified fact", niche="ocean", content_type_id="fun_facts"
+            )
+            self._wait_for_status(
+                project_id, {ProjectStatus.AWAITING_HUMAN_APPROVAL.value, ProjectStatus.FAILED.value}
+            )
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+        # One research call for the whole run (including the revision loop) -
+        # the revision only needed the same already-verified facts, not a
+        # fresh (and re-billed) research pass.
+        mock_research.assert_called_once()
+        self.assertEqual(mock_write.call_count, 2)
+        self.assertEqual(mock_write.call_args_list[1].kwargs["research_dossier"].topic, "a verified fact")
+
+    def test_recent_topics_dedupe_scoped_per_content_type(self):
+        with session_scope() as session:
+            session.add(VideoProject(topic="shared topic", content_type_id="fun_facts"))
+            session.add(VideoProject(topic="shared topic", content_type_id="motivational"))
+            session.commit()
+
+        self.assertEqual(orchestrator._recent_topics(content_type_id="fun_facts"), ["shared topic"])
+        self.assertEqual(orchestrator._recent_topics(content_type_id="motivational"), ["shared topic"])
+        self.assertEqual(orchestrator._recent_topics(content_type_id="ai_news"), [])
+        # No filter at all keeps the original global, cross-type behavior.
+        self.assertEqual(len(orchestrator._recent_topics()), 2)
+
+    def test_recent_topics_dedupe_scoped_per_series_overrides_content_type(self):
+        series_id = orchestrator.create_series(content_type_id="motivational", title="Series A")
+        other_series_id = orchestrator.create_series(content_type_id="motivational", title="Series B")
+        with session_scope() as session:
+            session.add(VideoProject(topic="series a topic", content_type_id="motivational", series_id=series_id))
+            session.add(
+                VideoProject(topic="series b topic", content_type_id="motivational", series_id=other_series_id)
+            )
+            session.commit()
+
+        self.assertEqual(orchestrator._recent_topics(content_type_id="motivational", series_id=series_id), ["series a topic"])
 
 
 if __name__ == "__main__":

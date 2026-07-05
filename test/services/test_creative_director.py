@@ -7,7 +7,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.agents import creative_director
 from app.agents.creative_director import CreativeDirector
-from app.agents.schemas import CreativeBrief, MetadataDraft, QuoteOrLesson, SearchTermsRevision
+from app.agents.schemas import (
+    CreativeBrief,
+    KeyFact,
+    MetadataDraft,
+    QuoteOrLesson,
+    ResearchDossier,
+    SearchTermsRevision,
+)
 
 
 def _fake_brief(quote_or_lesson=None) -> CreativeBrief:
@@ -105,6 +112,39 @@ class TestCreativeDirectorContentTypeStructure(unittest.TestCase):
         with patch.object(director, "call_json", return_value=_fake_brief(quote_or_lesson=lesson)):
             brief = director.write(topic="discipline", niche="self-improvement", content_type_id="motivational")
         self.assertEqual(brief.quote_or_lesson.is_quote, False)
+
+
+class TestCreativeDirectorResearchDossier(unittest.TestCase):
+    """
+    Part 3: a verified Researcher dossier, when present, must actually reach
+    the model and be called out as the sole source of truth for facts/quotes
+    - otherwise "research_required" content types get no benefit from the
+    Researcher having run at all.
+    """
+
+    def test_write_includes_dossier_in_payload_and_grounding_instruction(self):
+        director = CreativeDirector(project_id=None)
+        dossier = ResearchDossier(
+            topic="Octopuses have three hearts",
+            key_facts=[KeyFact(statement="Octopuses have three hearts", confidence="verified")],
+        )
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(topic="octopus facts", niche="ocean", research_dossier=dossier)
+
+        _, kwargs = mock_call.call_args
+        self.assertIn("verified_research", kwargs["user"])
+        self.assertIn("Octopuses have three hearts", kwargs["user"])
+        self.assertIn("already verified", kwargs["system"])
+        self.assertIn("do not introduce a new unverified fact", kwargs["system"])
+
+    def test_write_without_dossier_omits_grounding_instruction(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(topic="octopus facts", niche="ocean")
+
+        _, kwargs = mock_call.call_args
+        self.assertNotIn("verified_research", kwargs["user"])
+        self.assertNotIn("already verified", kwargs["system"])
 
 
 if __name__ == "__main__":

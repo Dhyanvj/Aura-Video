@@ -2,7 +2,7 @@ import os
 from typing import List, Optional
 
 from app.agents.base import BaseAgent
-from app.agents.schemas import CreativeBrief, SearchTermsRevision
+from app.agents.schemas import CreativeBrief, ResearchDossier, SearchTermsRevision
 from app.services import voice as voice_service
 from app.utils import utils
 
@@ -122,6 +122,7 @@ class CreativeDirector(BaseAgent):
         niche: str = "",
         revision_notes: Optional[str] = None,
         content_type_id: Optional[str] = None,
+        research_dossier: Optional[ResearchDossier] = None,
     ) -> CreativeBrief:
         payload = {
             "topic": topic,
@@ -133,6 +134,17 @@ class CreativeDirector(BaseAgent):
         addendum = _CONTENT_TYPE_ADDENDA.get(content_type_id)
         if addendum:
             system += f"\n\n{addendum}"
+        if research_dossier is not None:
+            payload["verified_research"] = research_dossier.model_dump()
+            system += (
+                "\n\nA Researcher has already verified the following before you write anything - base "
+                "your script's factual claims (and, if this content type has a quote/lesson centerpiece, "
+                "that centerpiece) ONLY on this verified research; do not introduce a new unverified fact, "
+                "quote, or attribution of your own. If the research has reduced_verification=true or lists "
+                "disputed_points, be conservative - prefer phrasing that doesn't overstate certainty, or "
+                "(for a quote/lesson type) fall back to an original life lesson rather than an unverified "
+                "quote."
+            )
         if revision_notes:
             payload["revision_notes"] = revision_notes
             system += (
