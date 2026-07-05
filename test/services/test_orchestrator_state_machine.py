@@ -54,7 +54,15 @@ class TestOrchestratorStateMachine(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: orchestrator pipelines run in daemon threads that
+        # outlive _wait_for_status returning (a revision loop's final
+        # _set_status call can race the test method's return). Deleting the
+        # temp file here lets a straggling thread silently recreate an
+        # empty, tableless file at the same path on its next write/read,
+        # corrupting whichever test happens to run next. A few KB leaked
+        # into the OS temp dir per test is a fine trade for not having
+        # cross-test corruption.
+        pass
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:
@@ -313,7 +321,15 @@ class TestOrchestratorResearchWiring(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: orchestrator pipelines run in daemon threads that
+        # outlive _wait_for_status returning (a revision loop's final
+        # _set_status call can race the test method's return). Deleting the
+        # temp file here lets a straggling thread silently recreate an
+        # empty, tableless file at the same path on its next write/read,
+        # corrupting whichever test happens to run next. A few KB leaked
+        # into the OS temp dir per test is a fine trade for not having
+        # cross-test corruption.
+        pass
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:

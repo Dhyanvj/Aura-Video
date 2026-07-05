@@ -39,7 +39,10 @@ class TestContentTypeSeeding(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: a still-running daemon thread from this test can
+        # otherwise reconnect after deletion and silently recreate an
+        # empty, tableless file at the same path, corrupting the next test.
+        pass
 
     def test_five_built_in_templates_seeded_once(self):
         with session_scope() as session:
@@ -104,7 +107,10 @@ class TestSeriesBible(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: a still-running daemon thread from this test can
+        # otherwise reconnect after deletion and silently recreate an
+        # empty, tableless file at the same path, corrupting the next test.
+        pass
 
     def _create_project(self, series_id=None, episode_number=None) -> int:
         with session_scope() as session:
@@ -230,7 +236,10 @@ class TestQuoteOrLessonWiring(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: a still-running daemon thread from this test can
+        # otherwise reconnect after deletion and silently recreate an
+        # empty, tableless file at the same path, corrupting the next test.
+        pass
 
     def _create_project(self, content_type_id=None) -> int:
         with session_scope() as session:

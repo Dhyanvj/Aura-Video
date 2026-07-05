@@ -32,7 +32,10 @@ class TestApprovalGateEnforcement(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: a still-running daemon thread from this test can
+        # otherwise reconnect after deletion and silently recreate an
+        # empty, tableless file at the same path, corrupting the next test.
+        pass
 
     def _create_project(self, status: ProjectStatus, **fields) -> int:
         with session_scope() as session:
@@ -142,7 +145,10 @@ class TestApproveEndpointPlatformValidation(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: a still-running daemon thread from this test can
+        # otherwise reconnect after deletion and silently recreate an
+        # empty, tableless file at the same path, corrupting the next test.
+        pass
 
     def _create_project(self) -> int:
         with session_scope() as session:

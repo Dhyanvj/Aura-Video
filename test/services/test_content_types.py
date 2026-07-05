@@ -31,7 +31,10 @@ class TestContentTypeAndSeriesEndpoints(unittest.TestCase):
 
     def tearDown(self):
         db_session.engine = self._original_engine
-        os.remove(self._db_path)
+        # Not deleted: a still-running daemon thread from this test can
+        # otherwise reconnect after deletion and silently recreate an
+        # empty, tableless file at the same path, corrupting the next test.
+        pass
 
     def _wait_for_failed(self, project_id: int, timeout: float = 10.0) -> None:
         # Project creation returns as soon as the row is written, but the

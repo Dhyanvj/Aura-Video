@@ -65,6 +65,15 @@ class VideoProject(SQLModel, table=True):
     series_id: Optional[int] = Field(default=None, foreign_key="series.id", index=True)
     episode_number: Optional[int] = None
 
+    # v3: relative path (from storage/) of this project's human-browsable
+    # folder - storage/projects/{content-type}/{date}-{slug}-{shortid}/. Set
+    # once on first materialization and never changed afterward, so the
+    # folder is stable for the project's life (docs/DECISIONS_V3.md §1).
+    # Null for projects created before this migration, or task-only renders
+    # from the legacy non-Agent-Studio API - both keep serving from
+    # storage/tasks/{task_id}/ via the existing routes.
+    storage_path: Optional[str] = None
+
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     published_at: Optional[datetime] = None

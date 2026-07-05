@@ -17,6 +17,7 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "series_id": "INTEGER",
     "episode_number": "INTEGER",
     "research_evidence": "JSON",
+    "storage_path": "TEXT",
 }
 _CONTENTTYPETEMPLATE_NEW_COLUMNS = {
     "description": "TEXT NOT NULL DEFAULT ''",

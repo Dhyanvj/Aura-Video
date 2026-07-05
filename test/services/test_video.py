@@ -22,7 +22,7 @@ from app.models import const
 from app.models.schema import MaterialInfo
 from app.services import state as sm
 from app.services import video as vd
-from app.utils import utils
+from app.utils import file_security, utils
 
 resources_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources")
 
@@ -181,6 +181,29 @@ class TestVideoService(unittest.TestCase):
         """
         with tempfile.NamedTemporaryFile(suffix=".mp3") as temp_bgm:
             self.assertEqual(vd.get_bgm_file(bgm_file=temp_bgm.name), "")
+
+    # storage v2 (docs/DECISIONS_V3.md §1) reuses this exact primitive to
+    # guard storage/projects/{content-type}/{folder}/ - same guarantees must
+    # hold for the new root, not just storage/tasks/.
+    def test_resolve_path_within_directory_rejects_traversal_out_of_a_project_folder(self):
+        with tempfile.TemporaryDirectory() as project_dir:
+            with open(os.path.join(project_dir, "project.json"), "w") as f:
+                f.write("{}")
+            with self.assertRaises(ValueError):
+                file_security.resolve_path_within_directory(project_dir, "../../../etc/passwd")
+
+    def test_resolve_path_within_directory_rejects_absolute_path_outside_project_folder(self):
+        with tempfile.TemporaryDirectory() as project_dir, tempfile.NamedTemporaryFile() as outside_file:
+            with self.assertRaises(ValueError):
+                file_security.resolve_path_within_directory(project_dir, outside_file.name)
+
+    def test_resolve_path_within_directory_accepts_a_real_file_inside_a_project_folder(self):
+        with tempfile.TemporaryDirectory() as project_dir:
+            target = os.path.join(project_dir, "project.json")
+            with open(target, "w") as f:
+                f.write("{}")
+            resolved = file_security.resolve_path_within_directory(project_dir, "project.json")
+            self.assertEqual(os.path.realpath(resolved), os.path.realpath(target))
 
     def test_get_ffmpeg_binary_uses_configured_env_path(self):
         """配置中显式指定 ffmpeg 时，应优先使用该路径。"""

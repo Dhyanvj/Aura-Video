@@ -1,16 +1,21 @@
+import os
 from typing import List, Literal, Optional
 
 from fastapi import Path, Request
+from fastapi.responses import FileResponse
+from loguru import logger
 from pydantic import BaseModel
 from sqlmodel import select
 
 from app.agents import orchestrator
 from app.config import config
+from app.controllers import base
 from app.controllers.v1.base import new_router
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, VideoProject
 from app.models.exception import HttpException
-from app.utils import utils
+from app.services import project_storage
+from app.utils import file_security, utils
 
 router = new_router()
 
@@ -175,6 +180,7 @@ def _project_summary(project: VideoProject) -> dict:
         "published_posts": project.published_posts,
         "task_id": project.task_id,
         "video_path": project.video_path,
+        "storage_path": project.storage_path,
         "cost_usd": project.cost_usd,
         "revision_count": project.revision_count,
         "failure_reason": project.failure_reason,
@@ -185,6 +191,35 @@ def _project_summary(project: VideoProject) -> dict:
         "created_at": project.created_at.isoformat(),
         "updated_at": project.updated_at.isoformat(),
     }
+
+
+def _resolve_project_file_path(project_id: int, filename: str, request_id: str) -> str:
+    # Anchored at this specific project's own folder (not the shared
+    # storage/projects root) - narrower than the legacy task-id routes'
+    # shared-root guard, so a manipulated filename can't reach another
+    # project's files even by guessing its folder name.
+    abs_dir = project_storage.project_abs_dir(project_id)
+    if abs_dir is None:
+        raise HttpException(task_id=request_id, status_code=404, message=f"project {project_id} has no storage folder")
+    try:
+        return file_security.resolve_path_within_directory(abs_dir, filename)
+    except ValueError as exc:
+        logger.warning(
+            f"reject unsafe project file path, request_id: {request_id}, project_id: {project_id}, "
+            f"path: {filename}, error: {exc}"
+        )
+        raise HttpException(
+            task_id=request_id,
+            status_code=404 if str(exc) == "file does not exist" else 403,
+            message=f"{request_id}: invalid file path",
+        )
+
+
+@router.get("/projects/{project_id}/files/{filename:path}", summary="Download a file from a project's storage folder")
+def get_project_file(request: Request, project_id: int = Path(...), filename: str = Path(...)):
+    request_id = base.get_task_id(request)
+    file_path = _resolve_project_file_path(project_id, filename, request_id)
+    return FileResponse(path=file_path, filename=os.path.basename(file_path))
 
 
 def _event_summary(event: AgentEvent) -> dict:

@@ -16,6 +16,7 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
+from app.services import project_storage
 from app.services.ws_manager import broadcast_event, broadcast_status
 
 # Content types where a news story older than its freshness window, or one
@@ -564,6 +565,23 @@ def _run_pipeline(
         _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
 
 
+def _materialize_project_storage(project_id: int) -> None:
+    """
+    Builds/refreshes the human-browsable storage/projects/... folder for this
+    project (docs/DECISIONS_V3.md §1) after every successful render. A
+    failure here must never fail an otherwise-successful render - it's a
+    storage-layout convenience layered on top of the pipeline, not a
+    correctness requirement for QA/approval - but per the "never silently
+    ignore an error" rule it's still logged as a visible AgentEvent, not just
+    a server-side log line.
+    """
+    try:
+        project_storage.materialize_project(project_id)
+    except Exception as exc:  # noqa: BLE001 - must not fail the render pipeline
+        logger.exception(f"project {project_id} storage materialization failed")
+        _log_event(project_id, f"Storage folder update failed (render output is unaffected): {exc}", type_="error")
+
+
 def _produce_and_review(
     project_id: int, topic: str, niche: str, brief: CreativeBrief, dossier: Optional[ResearchDossier] = None
 ) -> None:
@@ -581,6 +599,7 @@ def _produce_and_review(
     producer = Producer(project_id)
     final_state = producer.run(params)
     _set_status(project_id, ProjectStatus.RENDERED)
+    _materialize_project_storage(project_id)
 
     _set_status(project_id, ProjectStatus.QA_REVIEW)
     with session_scope() as session:
