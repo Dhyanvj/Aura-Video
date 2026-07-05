@@ -74,6 +74,12 @@ class VideoProject(SQLModel, table=True):
     # storage/tasks/{task_id}/ via the existing routes.
     storage_path: Optional[str] = None
 
+    # v3 originality engine (docs/DECISIONS_V3.md §2): the opening technique
+    # and first line this project's script used, so the next script for the
+    # same content type can be steered away from repeating it.
+    hook_pattern: Optional[str] = None
+    opening_line: Optional[str] = None
+
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     published_at: Optional[datetime] = None
@@ -129,6 +135,40 @@ class ContentTypeTemplate(SQLModel, table=True):
     default_quality_preset: str = "standard"  # budget | standard | cinematic
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class TopicEmbedding(SQLModel, table=True):
+    """
+    One row per accepted project idea (docs/DECISIONS_V3.md §2): a local
+    sentence-transformer embedding of "topic. angle." compared via brute-force
+    cosine against every prior row for the same content type (or series, if
+    the project belongs to one) to catch near-duplicate ideas before a script
+    gets written.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="videoproject.id", index=True)
+    content_type_id: Optional[str] = Field(default=None, index=True)
+    series_id: Optional[int] = Field(default=None, index=True)
+    text: str
+    embedding: list = Field(sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class UsedFact(SQLModel, table=True):
+    """
+    Fingerprint of a single verified fact/quote statement (docs/DECISIONS_V3.md
+    §2 per-type rule): for Fun Facts and Motivational, a specific fact/quote is
+    used once, ever, regardless of how differently a future script might word
+    the surrounding topic.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    content_type_id: str = Field(index=True)
+    fact_hash: str = Field(index=True)
+    project_id: int = Field(foreign_key="videoproject.id")
+    fact_text: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 class AgentEvent(SQLModel, table=True):

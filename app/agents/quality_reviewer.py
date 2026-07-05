@@ -12,6 +12,7 @@ from app.agents.schemas import (
     TechnicalCheck,
     VisionReview,
 )
+from app.services import originality
 from app.services import qa as qa_service
 from app.utils import utils
 
@@ -70,6 +71,7 @@ class QualityReviewer(BaseAgent):
         expected_audio_duration: Optional[float] = None,
         quote_or_lesson: Optional[QuoteOrLesson] = None,
         research_dossier: Optional[ResearchDossier] = None,
+        prior_scripts: Optional[list] = None,
     ) -> QAReport:
         technical_checks, duration = qa_service.run_technical_checks(
             video_path, subtitle_path, expected_audio_duration
@@ -149,6 +151,21 @@ class QualityReviewer(BaseAgent):
                     revision_target = "creative_director"
                 revision_notes = f"{revision_notes} {note}".strip() if revision_notes else note
 
+        script_repetition_flag = None
+        if prior_scripts:
+            ratio, _ = originality.most_similar_script(script, prior_scripts)
+            if ratio >= originality.SCRIPT_REPETITION_THRESHOLD:
+                script_repetition_flag = (
+                    f"{ratio:.0%} n-gram overlap with a recent script of this content type - too similar in "
+                    "wording/structure."
+                )
+                if overall == "pass":
+                    overall = "revise"
+                    revision_target = "creative_director"
+                revision_notes = (
+                    f"{revision_notes} {script_repetition_flag}".strip() if revision_notes else script_repetition_flag
+                )
+
         report = QAReport(
             overall=overall,
             technical_checks=[TechnicalCheck(name=c.name, passed=c.passed, detail=c.detail) for c in technical_checks],
@@ -157,6 +174,7 @@ class QualityReviewer(BaseAgent):
             revision_target=revision_target,
             revision_notes=revision_notes,
             fact_check_flags=fact_check_flags,
+            script_repetition_flag=script_repetition_flag,
         )
         self.log_event("output", message=f"QA verdict: {report.overall}", payload=report.model_dump())
         return report

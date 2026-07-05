@@ -147,5 +147,45 @@ class TestCreativeDirectorResearchDossier(unittest.TestCase):
         self.assertNotIn("already verified", kwargs["system"])
 
 
+class TestCreativeDirectorHookVariety(unittest.TestCase):
+    """
+    docs/DECISIONS_V3.md §2: the Creative Director is told which hook
+    patterns this content type has used recently, so it doesn't repeat the
+    same opening technique back-to-back.
+    """
+
+    def test_recent_hook_patterns_are_injected_into_the_system_prompt(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(
+                topic="whales", niche="ocean", recent_hook_patterns=["question", "bold_claim", "question"]
+            )
+
+        _, kwargs = mock_call.call_args
+        normalized_system = " ".join(kwargs["system"].split())
+        self.assertIn("question, bold_claim, question", normalized_system)
+        self.assertIn("DIFFERENT pattern", normalized_system)
+
+    def test_no_recent_patterns_omits_the_variety_instruction(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(topic="whales", niche="ocean", recent_hook_patterns=None)
+
+        _, kwargs = mock_call.call_args
+        self.assertNotIn("DIFFERENT pattern", kwargs["system"])
+
+    def test_brief_carries_hook_pattern_and_opening_line_through(self):
+        director = CreativeDirector(project_id=None)
+        brief_with_hook = _fake_brief()
+        brief_with_hook = brief_with_hook.model_copy(
+            update={"hook_pattern": "statistic", "opening_line": "9 out of 10 people get this wrong."}
+        )
+        with patch.object(director, "call_json", return_value=brief_with_hook):
+            brief = director.write(topic="whales", niche="ocean")
+
+        self.assertEqual(brief.hook_pattern, "statistic")
+        self.assertEqual(brief.opening_line, "9 out of 10 people get this wrong.")
+
+
 if __name__ == "__main__":
     unittest.main()

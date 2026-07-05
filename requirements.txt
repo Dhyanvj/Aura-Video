@@ -22,6 +22,7 @@ apscheduler==3.11.0
 pillow==11.0.0
 pytrends==4.9.2
 toml==0.10.2
+sentence-transformers==5.6.0
 
 # Optional unofficial g4f provider is intentionally not installed by default.
 # Use `uv sync --extra g4f` only when you explicitly accept that provider risk.

@@ -55,7 +55,19 @@ For voice_recommendation, copy one entry EXACTLY (character for character) from 
 available_voices list you're given - it must be a real TTS voice ID, never a
 description of a voice (e.g. never write something like "a deep calm narrator voice").
 
-Suggest a subtitle style. Draft a working title and 3 hook variants for the metadata."""
+Suggest a subtitle style. Draft a working title and 3 hook variants for the metadata.
+
+Also classify your own opening as one hook_pattern: "question" (opens by asking the viewer
+something), "bold_claim" (opens with a surprising assertion), "statistic" (opens with a number),
+"story_cold_open" (opens mid-scene/anecdote), or "other". Copy your script's exact first sentence
+into opening_line."""
+
+_HOOK_VARIETY_INSTRUCTION = """
+
+For hook variety: this content type's last {count} scripts used these hook patterns, most recent
+first: {patterns}. Prefer a DIFFERENT pattern than the most recent one or two entries unless the
+topic genuinely calls for repeating it - back-to-back videos that all open the same way feel
+repetitive to a returning viewer."""
 
 _REVISE_TERMS_SYSTEM_PROMPT = f"""You are the Creative Director for a short-form vertical video channel.
 The script, voice, and everything else about this video is already finalized and must
@@ -123,6 +135,7 @@ class CreativeDirector(BaseAgent):
         revision_notes: Optional[str] = None,
         content_type_id: Optional[str] = None,
         research_dossier: Optional[ResearchDossier] = None,
+        recent_hook_patterns: Optional[List[str]] = None,
     ) -> CreativeBrief:
         payload = {
             "topic": topic,
@@ -134,6 +147,10 @@ class CreativeDirector(BaseAgent):
         addendum = _CONTENT_TYPE_ADDENDA.get(content_type_id)
         if addendum:
             system += f"\n\n{addendum}"
+        if recent_hook_patterns:
+            system += _HOOK_VARIETY_INSTRUCTION.format(
+                count=len(recent_hook_patterns), patterns=", ".join(recent_hook_patterns)
+            )
         if research_dossier is not None:
             payload["verified_research"] = research_dossier.model_dump()
             system += (

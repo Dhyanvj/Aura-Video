@@ -73,6 +73,11 @@ class CreativeBrief(BaseModel):
     subtitle_style: str
     metadata_draft: MetadataDraft
     quote_or_lesson: Optional[QuoteOrLesson] = None
+    # docs/DECISIONS_V3.md §2 hook variety: the opening technique used, so the
+    # next script for this content type can be steered away from repeating
+    # the same pattern back-to-back.
+    hook_pattern: str = "other"  # question | bold_claim | statistic | story_cold_open | other
+    opening_line: str = ""
 
 
 class SearchTermsRevision(BaseModel):
@@ -123,6 +128,21 @@ class QAReport(BaseModel):
     revision_target: Optional[str] = None
     revision_notes: Optional[str] = None
     fact_check_flags: List[FactCheckFlag] = Field(default_factory=list)
+    # docs/DECISIONS_V3.md §2 script-repetition check: deterministic n-gram
+    # overlap against the last 5 scripts of this content type - set only when
+    # the overlap crossed the threshold, so it's None on every normal report.
+    script_repetition_flag: Optional[str] = None
+
+
+class OriginalityJudgment(BaseModel):
+    """
+    Output of the cheap Haiku-tier borderline-band check (docs/DECISIONS_V3.md
+    §2): given two idea summaries, is this the same idea reworded, or a
+    genuinely new angle?
+    """
+
+    same_idea: bool
+    rationale: str = ""
 
 
 class PlatformVariant(BaseModel):

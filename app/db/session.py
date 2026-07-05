@@ -18,6 +18,8 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "episode_number": "INTEGER",
     "research_evidence": "JSON",
     "storage_path": "TEXT",
+    "hook_pattern": "TEXT",
+    "opening_line": "TEXT",
 }
 _CONTENTTYPETEMPLATE_NEW_COLUMNS = {
     "description": "TEXT NOT NULL DEFAULT ''",

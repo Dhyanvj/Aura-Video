@@ -264,5 +264,51 @@ class TestQualityReviewerFactCheck(unittest.TestCase):
         self.assertIn("unsupported", report.revision_notes)
 
 
+class TestQualityReviewerScriptRepetition(unittest.TestCase):
+    """
+    docs/DECISIONS_V3.md §2: a deterministic n-gram overlap check against the
+    last 5 scripts of this content type, independent of the LLM vision call -
+    variety beyond just topic-level dedupe.
+    """
+
+    def _review(self, script, prior_scripts):
+        reviewer = QualityReviewer(project_id=None)
+        with patch(
+            "app.agents.quality_reviewer.qa_service.run_technical_checks",
+            return_value=([], 30.0),
+        ), patch(
+            "app.agents.quality_reviewer.qa_service.extract_frames", return_value=["/tmp/frame1.jpg"]
+        ), patch.object(QualityReviewer, "_encode_image", return_value="ZmFrZQ=="), patch.object(
+            reviewer,
+            "call_json_with_content",
+            return_value=VisionReview(
+                overall="pass", frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")]
+            ),
+        ):
+            return reviewer.review(video_path="/tmp/whatever.mp4", script=script, prior_scripts=prior_scripts)
+
+    def test_near_identical_script_flags_and_downgrades_a_pass_to_revise(self):
+        script = "The mantis shrimp punches faster than a speeding bullet in the open ocean today."
+        prior = ["The mantis shrimp punches faster than a speeding bullet in the open ocean every day."]
+        report = self._review(script, prior)
+        self.assertEqual(report.overall, "revise")
+        self.assertEqual(report.revision_target, "creative_director")
+        self.assertIsNotNone(report.script_repetition_flag)
+        self.assertIn("overlap", report.script_repetition_flag)
+
+    def test_dissimilar_scripts_are_unaffected(self):
+        script = "The mantis shrimp punches faster than a speeding bullet in the open ocean today."
+        prior = ["Discipline means keeping a promise to yourself when nobody else is watching you."]
+        report = self._review(script, prior)
+        self.assertEqual(report.overall, "pass")
+        self.assertIsNone(report.script_repetition_flag)
+
+    def test_no_prior_scripts_skips_the_check_entirely(self):
+        script = "The mantis shrimp punches faster than a speeding bullet in the open ocean today."
+        report = self._review(script, prior_scripts=None)
+        self.assertEqual(report.overall, "pass")
+        self.assertIsNone(report.script_repetition_flag)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,7 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
-from app.services import project_storage
+from app.services import originality, project_storage
 from app.services.ws_manager import broadcast_event, broadcast_status
 
 # Content types where a news story older than its freshness window, or one
@@ -104,6 +104,45 @@ def _recent_topics(content_type_id: Optional[str] = None, series_id: Optional[in
             query = query.where(VideoProject.content_type_id == content_type_id)
         rows = session.exec(query.order_by(VideoProject.created_at.desc()).limit(_RECENT_TOPICS_LIMIT)).all()
     return [t for t in rows if t]
+
+
+_RECENT_HOOK_PATTERNS_LIMIT = 10
+
+
+def _recent_hook_patterns(content_type_id: Optional[str]) -> list[str]:
+    """Last 10 hook_pattern values used for this content type, most recent first (docs/DECISIONS_V3.md §2)."""
+    if not content_type_id:
+        return []
+    with session_scope() as session:
+        query = (
+            select(VideoProject.hook_pattern)
+            .where(VideoProject.content_type_id == content_type_id)
+            .where(VideoProject.hook_pattern.is_not(None))
+            .order_by(VideoProject.created_at.desc())
+            .limit(_RECENT_HOOK_PATTERNS_LIMIT)
+        )
+        rows = session.exec(query).all()
+    return [p for p in rows if p]
+
+
+_RECENT_SCRIPTS_LIMIT = 5
+
+
+def _recent_scripts(content_type_id: Optional[str], exclude_project_id: int) -> list[str]:
+    """Last 5 scripts of this content type (excluding this project itself), for the script-repetition check."""
+    if not content_type_id:
+        return []
+    with session_scope() as session:
+        query = (
+            select(VideoProject)
+            .where(VideoProject.content_type_id == content_type_id)
+            .where(VideoProject.id != exclude_project_id)
+            .where(VideoProject.brief.is_not(None))
+            .order_by(VideoProject.created_at.desc())
+            .limit(_RECENT_SCRIPTS_LIMIT)
+        )
+        projects = session.exec(query).all()
+    return [p.brief["script"] for p in projects if p.brief and p.brief.get("script")]
 
 
 def _get_content_type_info(content_type_id: Optional[str]) -> Optional[dict]:
@@ -345,7 +384,35 @@ def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None
             _set_status(project_id, ProjectStatus.IDEA_PENDING)
             return
 
-        best = max(eligible, key=lambda idea: idea.opportunity_score)
+        # Originality gate (docs/DECISIONS_V3.md §2), applied while picking
+        # from Trend Scout's own ranked ideas rather than as a separate
+        # regenerate-and-recall-the-agent step: walk the list highest-scoring
+        # first and skip any idea that collides with prior coverage - this is
+        # "make Trend Scout generate a different concept" at zero extra LLM
+        # cost, since it already proposed several. _run_pipeline still runs
+        # the canonical evaluate_topic/commit_topic pass on whichever idea is
+        # finally chosen.
+        best = None
+        for idea in sorted(eligible, key=lambda idea: idea.opportunity_score, reverse=True):
+            check = originality.check_topic_originality(content_type_id, series_id, idea.title, idea.why_trending)
+            if not check.rejected:
+                best = idea
+                break
+            _log_event(
+                project_id,
+                f"Skipped trend idea {idea.title!r}: {check.reason}",
+                type_="error",
+            )
+
+        if best is None:
+            _set_status(
+                project_id,
+                ProjectStatus.FAILED,
+                failure_reason="Every eligible trend idea collided with prior coverage; no original concept available.",
+            )
+            _log_event(project_id, "All eligible trend ideas rejected by the originality check", type_="error")
+            return
+
         _log_event(project_id, f"Trend Scout picked {best.title!r} (opportunity score {best.opportunity_score})")
 
         dossier = None
@@ -396,10 +463,13 @@ def _write_brief(
         revision_notes=revision_notes,
         content_type_id=content_type_id,
         research_dossier=dossier,
+        recent_hook_patterns=_recent_hook_patterns(content_type_id),
     )
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         project.brief = brief.model_dump()
+        project.hook_pattern = brief.hook_pattern
+        project.opening_line = brief.opening_line
         session.add(project)
         session.commit()
         series_id = project.series_id
@@ -553,6 +623,22 @@ def _run_pipeline(
                 _log_event(project_id, "Reduced verification on a news type is a hard fail", type_="error")
                 return
 
+        if revision_notes is None:
+            # Originality gate (docs/DECISIONS_V3.md §2): runs once per
+            # project, right before a real script gets written - never on a
+            # revision re-entry (revision_notes is set), since that's the
+            # same already-accepted topic being reworked, not a new idea.
+            check = originality.evaluate_topic(project_id, content_type_id, series_id, topic, dossier)
+            if check.rejected:
+                _set_status(
+                    project_id,
+                    ProjectStatus.FAILED,
+                    failure_reason=f"Originality check rejected this topic: {check.reason}",
+                )
+                _log_event(project_id, f"Originality check rejected the topic: {check.reason}", type_="error")
+                return
+            originality.commit_topic(project_id, content_type_id, series_id, topic, dossier)
+
         _set_status(project_id, ProjectStatus.SCRIPTING, topic=topic)
         brief = _write_brief(project_id, topic, niche, revision_notes, dossier)
         _set_status(project_id, ProjectStatus.SCRIPT_READY)
@@ -605,6 +691,7 @@ def _produce_and_review(
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         video_path = project.video_path
+        content_type_id = project.content_type_id
     reviewer = QualityReviewer(project_id)
     qa_report = reviewer.review(
         video_path=video_path,
@@ -613,6 +700,7 @@ def _produce_and_review(
         expected_audio_duration=final_state.get("audio_duration"),
         quote_or_lesson=brief.quote_or_lesson,
         research_dossier=dossier,
+        prior_scripts=_recent_scripts(content_type_id, exclude_project_id=project_id),
     )
     _append_qa_report(project_id, qa_report)
 
