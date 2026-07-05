@@ -93,6 +93,7 @@ class TestTaskService(unittest.TestCase):
             with (
                 patch.object(tm.voice, "tts") as tts,
                 patch.object(tm.voice, "get_audio_duration", return_value=7),
+                patch.object(tm.audio_analysis, "check_audible", return_value=(True, "")),
             ):
                 audio_file, audio_duration, sub_maker = tm.generate_audio(
                     task_id, params, "script"
@@ -123,6 +124,7 @@ class TestTaskService(unittest.TestCase):
                 with (
                     patch.object(tm.voice, "tts") as tts,
                     patch.object(tm.voice, "get_audio_duration", return_value=6),
+                    patch.object(tm.audio_analysis, "check_audible", return_value=(True, "")),
                 ):
                     audio_file, audio_duration, result_sub_maker = tm.generate_audio(
                         task_id, params, "script"
@@ -162,6 +164,107 @@ class TestTaskService(unittest.TestCase):
         self.assertIsNone(result_sub_maker)
         tts.assert_not_called()
         update_task.assert_called_with(task_id, state=tm.const.TASK_STATE_FAILED)
+
+    def test_generate_audio_fails_loudly_when_tts_audio_is_unusable(self):
+        """
+        Root-cause regression: a TTS provider can report success (a non-None
+        SubMaker with valid word/sentence-boundary metadata) while the actual
+        audio payload is missing, silent, or truncated. generate_audio() must
+        validate the real file and hard-fail with an actionable reason rather
+        than trust the provider's metadata and proceed.
+        """
+        task_id = "test-tts-unusable-audio"
+        task_dir = utils.task_dir(task_id)
+        params = VideoParams(video_subject="x", video_script="", voice_name="test-voice")
+
+        try:
+            with (
+                patch.object(tm.voice, "tts", return_value=object()) as tts,
+                patch.object(
+                    tm.audio_analysis,
+                    "check_audible",
+                    return_value=(False, "audio is effectively silent (mean volume -80.0 dB, threshold -50 dB)"),
+                ),
+                patch.object(tm.sm.state, "update_task") as update_task,
+            ):
+                audio_file, audio_duration, sub_maker = tm.generate_audio(
+                    task_id, params, "script"
+                )
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        self.assertIsNone(audio_file)
+        self.assertIsNone(audio_duration)
+        self.assertIsNone(sub_maker)
+        tts.assert_called_once()
+        _, kwargs = update_task.call_args
+        self.assertEqual(kwargs["state"], tm.const.TASK_STATE_FAILED)
+        self.assertIn("silent", kwargs["failure_reason"])
+
+    def test_generate_audio_uses_real_measured_duration_not_submaker_metadata(self):
+        """
+        audio_duration must come from probing the actual file, not from the
+        SubMaker's word-boundary metadata - the two can diverge exactly when
+        the provider misbehaves, which is the scenario this whole fix exists
+        to catch.
+        """
+        task_id = "test-tts-real-duration"
+        task_dir = utils.task_dir(task_id)
+        params = VideoParams(video_subject="x", video_script="", voice_name="test-voice")
+
+        try:
+            with (
+                patch.object(tm.voice, "tts", return_value=object()),
+                patch.object(tm.audio_analysis, "check_audible", return_value=(True, "")),
+                patch.object(tm.audio_analysis, "probe_audio_duration", return_value=42.4),
+            ):
+                audio_file, audio_duration, sub_maker = tm.generate_audio(
+                    task_id, params, "script"
+                )
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        self.assertEqual(audio_duration, 43)  # math.ceil(42.4)
+        self.assertIsNotNone(sub_maker)
+
+    def test_generate_audio_rejects_unusable_custom_audio_file(self):
+        task_id = "test-custom-audio-unusable"
+        task_dir = utils.task_dir(task_id)
+        custom_audio_file = os.path.join(task_dir, "custom-audio.mp3")
+        with open(custom_audio_file, "wb") as audio:
+            audio.write(b"fake audio")
+
+        params = VideoParams(
+            video_subject="custom audio",
+            video_script="",
+            custom_audio_file=custom_audio_file,
+            voice_name="test-voice",
+        )
+
+        try:
+            with (
+                patch.object(tm.voice, "tts") as tts,
+                patch.object(tm.voice, "get_audio_duration", return_value=7),
+                patch.object(
+                    tm.audio_analysis,
+                    "check_audible",
+                    return_value=(False, "audio duration is 0.00s (expected at least 1s)"),
+                ),
+                patch.object(tm.sm.state, "update_task") as update_task,
+            ):
+                audio_file, audio_duration, sub_maker = tm.generate_audio(
+                    task_id, params, "script"
+                )
+        finally:
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        self.assertIsNone(audio_file)
+        self.assertIsNone(audio_duration)
+        self.assertIsNone(sub_maker)
+        tts.assert_not_called()
+        _, kwargs = update_task.call_args
+        self.assertEqual(kwargs["state"], tm.const.TASK_STATE_FAILED)
+        self.assertIn("Custom audio file is unusable", kwargs["failure_reason"])
 
     def test_generate_subtitle_uses_whisper_for_custom_audio_without_sub_maker(self):
         """

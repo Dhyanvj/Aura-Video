@@ -90,8 +90,14 @@ class Producer:
 
         final_state = sm.state.get_task(task_id) or {}
         if final_state.get("state") == const.TASK_STATE_FAILED:
-            self.log_event("error", message=f"Render failed for task {task_id}")
-            raise RuntimeError(f"render pipeline failed for task {task_id}")
+            # Some render stages (e.g. TTS audio validation) attach a
+            # specific, actionable failure_reason to the task state; surface
+            # it here so the project's Failed card shows that instead of a
+            # generic message - the reason is otherwise lost, since nothing
+            # else reads task state after this point.
+            reason = final_state.get("failure_reason") or f"render pipeline failed for task {task_id}"
+            self.log_event("error", message=f"Render failed for task {task_id}: {reason}")
+            raise RuntimeError(reason)
 
         videos = final_state.get("videos") or []
         with session_scope() as session:

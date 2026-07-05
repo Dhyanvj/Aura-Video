@@ -72,6 +72,24 @@ class TestQATechnicalChecks(unittest.TestCase):
         self.assertFalse(by_name["resolution_1080x1920"].passed)
         self.assertFalse(by_name["audio_present"].passed)
 
+    def test_audio_duration_check_skipped_without_expected_duration(self):
+        checks, _ = qa.run_technical_checks(self.good_video)
+        self.assertNotIn("audio_duration_matches_voiceover", {c.name for c in checks})
+
+    def test_audio_duration_matches_voiceover_passes_within_tolerance(self):
+        # good_video is a real 20s render; well within 2% of 20.0s.
+        checks, _ = qa.run_technical_checks(self.good_video, expected_audio_duration=20.0)
+        by_name = {c.name: c for c in checks}
+        self.assertTrue(by_name["audio_duration_matches_voiceover"].passed)
+
+    def test_audio_duration_matches_voiceover_fails_when_final_mux_dropped_audio_time(self):
+        # Root-cause regression: a truncated/dropped audio track during the
+        # final render would still pass "audio_present" (stream exists)
+        # undetected - this check catches the duration mismatch instead.
+        checks, _ = qa.run_technical_checks(self.good_video, expected_audio_duration=10.0)
+        by_name = {c.name: c for c in checks}
+        self.assertFalse(by_name["audio_duration_matches_voiceover"].passed)
+
     def test_extract_frames_returns_evenly_spaced_real_jpegs(self):
         frames = qa.extract_frames(self.good_video, video_duration=20.0, count=6)
         try:

@@ -86,6 +86,29 @@ class TestQualityReviewerRevisionRouting(unittest.TestCase):
         self.assertEqual(report.overall, "pass")
         self.assertIsNone(report.revision_target)
 
+    def test_review_forwards_expected_audio_duration_to_technical_checks(self):
+        reviewer = QualityReviewer(project_id=None)
+        with patch(
+            "app.agents.quality_reviewer.qa_service.run_technical_checks",
+            return_value=([TechnicalCheckResult("duration_15_to_60s", True, "45.0s")], 45.0),
+        ) as mock_checks, patch(
+            "app.agents.quality_reviewer.qa_service.extract_frames", return_value=["/tmp/frame1.jpg"]
+        ), patch.object(QualityReviewer, "_encode_image", return_value="ZmFrZQ=="), patch.object(
+            reviewer,
+            "call_json_with_content",
+            return_value=VisionReview(
+                overall="pass", frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")]
+            ),
+        ):
+            reviewer.review(
+                video_path="/tmp/whatever.mp4",
+                script="script",
+                subtitle_path="/tmp/sub.srt",
+                expected_audio_duration=45.2,
+            )
+
+        mock_checks.assert_called_once_with("/tmp/whatever.mp4", "/tmp/sub.srt", 45.2)
+
 
 if __name__ == "__main__":
     unittest.main()

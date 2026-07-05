@@ -275,6 +275,43 @@ class TestVideoService(unittest.TestCase):
 
         self.assertNotIn("h264_nvenc", vd._runtime_disabled_video_codecs)
 
+    def test_write_videofile_preserves_audio_codec_on_both_primary_and_fallback_attempts(self):
+        """
+        Regression guard: a codec ladder that drops -c:a/audio_codec on one
+        of the two write_videofile attempts (primary hardware codec vs.
+        libx264 fallback) would produce a silent video only on whichever
+        path actually gets exercised at runtime - easy to miss in testing
+        since the "happy path" codec is what's usually exercised locally.
+        Both attempts must receive the exact same audio kwargs.
+        """
+
+        class _FakeClip:
+            def __init__(self):
+                self.calls = []
+
+            def write_videofile(self, output_file, codec, **kwargs):
+                self.calls.append({"codec": codec, **kwargs})
+                if codec == "h264_nvenc":
+                    raise RuntimeError("nvenc device not available")
+
+        fake_clip = _FakeClip()
+
+        with patch.object(vd, "_ffmpeg_encoder_exists", return_value=True):
+            vd._write_videofile_with_codec_fallback(
+                fake_clip,
+                "/tmp/fake.mp4",
+                codec="h264_nvenc",
+                audio_codec="aac",
+                audio_fps=44100,
+                logger=None,
+                fps=30,
+            )
+
+        self.assertEqual(len(fake_clip.calls), 2)
+        for call in fake_clip.calls:
+            self.assertEqual(call["audio_codec"], "aac")
+            self.assertEqual(call["audio_fps"], 44100)
+
     def test_format_ffmpeg_concat_path_normalizes_windows_path(self):
         """
         concat demuxer 的文件列表对 Windows 反斜杠较敏感，写入 list 前统一
@@ -499,6 +536,143 @@ class TestVideoService(unittest.TestCase):
 
         self.assertEqual(result, combined_video_path)
         self.assertEqual(write_mock.call_count, 4)
+
+    def test_combine_videos_caps_ffmpeg_concat_output_at_required_duration(self):
+        """
+        Root-cause regression: clips are appended in whole max_clip_duration
+        chunks until the running total crosses the target, which can
+        overshoot by nearly a full chunk (e.g. a 46s voiceover landing on a
+        50s video). Nothing trimmed that excess before, so the final render's
+        audio track ran several seconds past the voiceover. combine_videos()
+        must ask the ffmpeg concat step to cap the output at
+        required_video_duration in the same pass.
+        """
+
+        class _FakeAudioClip:
+            duration = 10.0
+
+            def close(self):
+                pass
+
+        class _FakeVideoClip:
+            def __init__(self, duration):
+                self.duration = duration
+                self.size = (1080, 1920)
+                self.w = 1080
+                self.h = 1920
+
+            def subclipped(self, start_time, end_time):
+                return _FakeVideoClip(end_time - start_time)
+
+        video_durations = {"clip-1.mp4": 5.0, "clip-2.mp4": 5.0, "clip-3.mp4": 5.0}
+
+        def _open_fake_video_clip(video_path):
+            return _FakeVideoClip(video_durations[video_path])
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            combined_video_path = os.path.join(temp_dir, "combined.mp4")
+
+            with patch.object(vd, "AudioFileClip", return_value=_FakeAudioClip()):
+                with patch.object(
+                    vd, "_open_video_clip_quietly", side_effect=_open_fake_video_clip
+                ):
+                    with patch.object(vd, "_write_videofile_with_codec_fallback"):
+                        with patch.object(vd, "concat_video_clips_with_ffmpeg") as concat_mock:
+                            with patch.object(vd, "delete_files"):
+                                vd.combine_videos(
+                                    combined_video_path=combined_video_path,
+                                    video_paths=list(video_durations.keys()),
+                                    audio_file=os.path.join(temp_dir, "audio.mp3"),
+                                    video_aspect=vd.VideoAspect.portrait,
+                                    video_concat_mode=vd.VideoConcatMode.sequential,
+                                    video_transition_mode=None,
+                                    max_clip_duration=5,
+                                )
+
+        self.assertEqual(concat_mock.call_args.kwargs["duration"], vd._get_required_video_duration(10.0))
+
+    def test_combine_videos_trims_single_oversized_clip_to_required_duration(self):
+        """
+        The single-clip shortcut used to shutil.copy() the clip verbatim even
+        when that one clip alone overshoots the target duration.
+        """
+
+        class _FakeAudioClip:
+            duration = 3.0
+
+            def close(self):
+                pass
+
+        class _FakeVideoClip:
+            def __init__(self, duration):
+                self.duration = duration
+                self.size = (1080, 1920)
+                self.w = 1080
+                self.h = 1920
+
+            def subclipped(self, start_time, end_time):
+                return _FakeVideoClip(end_time - start_time)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            combined_video_path = os.path.join(temp_dir, "combined.mp4")
+
+            with patch.object(vd, "AudioFileClip", return_value=_FakeAudioClip()):
+                with patch.object(
+                    vd, "_open_video_clip_quietly", return_value=_FakeVideoClip(10.0)
+                ):
+                    with patch.object(vd, "_write_videofile_with_codec_fallback"):
+                        with patch.object(vd, "_trim_video_with_ffmpeg") as trim_mock:
+                            with patch.object(vd, "delete_files"):
+                                vd.combine_videos(
+                                    combined_video_path=combined_video_path,
+                                    video_paths=["clip-1.mp4"],
+                                    audio_file=os.path.join(temp_dir, "audio.mp3"),
+                                    video_aspect=vd.VideoAspect.portrait,
+                                    video_concat_mode=vd.VideoConcatMode.sequential,
+                                    video_transition_mode=None,
+                                    max_clip_duration=10,
+                                )
+
+        trim_mock.assert_called_once()
+        self.assertEqual(trim_mock.call_args.args[2], vd._get_required_video_duration(3.0))
+
+    def test_concat_video_clips_with_ffmpeg_adds_duration_cap_flag(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clip_file = os.path.join(temp_dir, "clip.mp4")
+            output_file = os.path.join(temp_dir, "combined.mp4")
+            Path(clip_file).write_bytes(b"fake")
+
+            with patch.object(vd, "_ffmpeg_encoder_exists", return_value=True):
+                with patch.object(
+                    vd.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")
+                ) as run:
+                    vd.concat_video_clips_with_ffmpeg(
+                        clip_files=[clip_file],
+                        output_file=output_file,
+                        threads=1,
+                        output_dir=temp_dir,
+                        duration=12.345,
+                    )
+
+        command = run.call_args.args[0]
+        self.assertIn("-t", command)
+        self.assertEqual(command[command.index("-t") + 1], "12.345")
+
+    def test_concat_video_clips_with_ffmpeg_omits_duration_cap_by_default(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            clip_file = os.path.join(temp_dir, "clip.mp4")
+            output_file = os.path.join(temp_dir, "combined.mp4")
+            Path(clip_file).write_bytes(b"fake")
+
+            with patch.object(vd, "_ffmpeg_encoder_exists", return_value=True):
+                with patch.object(
+                    vd.subprocess, "run", return_value=types.SimpleNamespace(returncode=0, stdout="", stderr="")
+                ) as run:
+                    vd.concat_video_clips_with_ffmpeg(
+                        clip_files=[clip_file], output_file=output_file, threads=1, output_dir=temp_dir
+                    )
+
+        self.assertNotIn("-t", run.call_args.args[0])
 
     def test_prioritize_unique_source_clips_uses_each_source_before_reuse(self):
         """

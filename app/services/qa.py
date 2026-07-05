@@ -53,11 +53,15 @@ def probe_video(video_path: str) -> dict:
 
 
 def run_technical_checks(
-    video_path: str, subtitle_path: Optional[str] = None
+    video_path: str, subtitle_path: Optional[str] = None, expected_audio_duration: Optional[float] = None
 ) -> Tuple[List[TechnicalCheckResult], float]:
     """
     Deterministic technical checks: duration, resolution, audio presence, file
-    size, subtitle existence/coverage. Returns (checks, video_duration_seconds).
+    size, subtitle existence/coverage, and (if `expected_audio_duration` is
+    given) that the final mux's audio stream duration is within 2% of the
+    voiceover's - a truncated/dropped audio track during the final render
+    would otherwise still pass "audio_present" (stream exists) undetected.
+    Returns (checks, video_duration_seconds).
     """
     if not os.path.isfile(video_path):
         return [TechnicalCheckResult("file_exists", False, f"video file not found: {video_path}")], 0.0
@@ -104,6 +108,17 @@ def run_technical_checks(
             "audio stream found" if audio_stream else "no audio stream",
         )
     )
+
+    if audio_stream is not None and expected_audio_duration:
+        audio_duration = float(audio_stream.get("duration") or 0)
+        tolerance = expected_audio_duration * 0.02
+        checks.append(
+            TechnicalCheckResult(
+                "audio_duration_matches_voiceover",
+                abs(audio_duration - expected_audio_duration) <= tolerance,
+                f"final audio stream is {audio_duration:.1f}s, voiceover was {expected_audio_duration:.1f}s",
+            )
+        )
 
     if subtitle_path:
         checks.append(_check_subtitle_alignment(subtitle_path, duration))

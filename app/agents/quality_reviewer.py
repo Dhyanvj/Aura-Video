@@ -34,8 +34,16 @@ _SCRIPT_ONLY_FIXABLE_CHECKS = {"duration_15_to_60s"}
 class QualityReviewer(BaseAgent):
     agent_name = "quality_reviewer"
 
-    def review(self, video_path: str, script: str, subtitle_path: Optional[str] = None) -> QAReport:
-        technical_checks, duration = qa_service.run_technical_checks(video_path, subtitle_path)
+    def review(
+        self,
+        video_path: str,
+        script: str,
+        subtitle_path: Optional[str] = None,
+        expected_audio_duration: Optional[float] = None,
+    ) -> QAReport:
+        technical_checks, duration = qa_service.run_technical_checks(
+            video_path, subtitle_path, expected_audio_duration
+        )
         self.log_event(
             "tool_call",
             message="Ran technical checks",

@@ -73,6 +73,11 @@ fps = 30
 # 这里给视频素材多留一个很小的安全余量，避免音频末尾因为帧舍入出现黑屏、
 # 卡顿或最后一小段旁白没有画面的情况。
 _VIDEO_DURATION_SAFETY_MARGIN = 0.1
+# Clips are appended in whole max_clip_duration-sized chunks (see
+# combine_videos), so the combined duration can land anywhere up to almost a
+# full chunk past the target - only bother re-encoding the single-clip
+# shortcut path if the overshoot is more than a trivial rounding amount.
+_VIDEO_DURATION_TRIM_TOLERANCE = 0.5
 _BGM_EXTENSIONS = (".mp3",)
 _DEFAULT_VIDEO_CODEC = "libx264"
 _SUPPORTED_VIDEO_CODECS = (
@@ -313,8 +318,31 @@ def _format_ffmpeg_concat_path(file_path: str) -> str:
     return _escape_ffmpeg_concat_path(absolute_path.replace("\\", "/"))
 
 
+def _trim_video_with_ffmpeg(input_file: str, output_file: str, duration: float) -> None:
+    """Re-encodes `input_file` to at most `duration` seconds. Used for the
+    single-clip combine_videos() path, which otherwise just copies the file
+    verbatim even when that one clip alone overshoots the target duration."""
+    command = [
+        utils.get_ffmpeg_binary(),
+        "-y",
+        "-i",
+        input_file,
+        "-t",
+        f"{duration:.3f}",
+        "-c:v",
+        _get_effective_video_codec(),
+        "-pix_fmt",
+        "yuv420p",
+        output_file,
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        error_message = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(error_message or "ffmpeg trim failed")
+
+
 def concat_video_clips_with_ffmpeg(
-    clip_files: List[str], output_file: str, threads: int, output_dir: str
+    clip_files: List[str], output_file: str, threads: int, output_dir: str, duration: float = None
 ):
     concat_list_file = os.path.join(output_dir, "ffmpeg-concat-list.txt")
     with open(concat_list_file, "w", encoding="utf-8") as fp:
@@ -322,7 +350,7 @@ def concat_video_clips_with_ffmpeg(
             fp.write(f"file '{_format_ffmpeg_concat_path(clip_file)}'\n")
 
     def build_command(codec: str) -> list[str]:
-        return [
+        command = [
             utils.get_ffmpeg_binary(),
             "-y",
             "-f",
@@ -331,6 +359,13 @@ def concat_video_clips_with_ffmpeg(
             "0",
             "-i",
             concat_list_file,
+        ]
+        if duration:
+            # Caps the concatenated output at the caller's target duration in
+            # this same pass - see the overshoot note at the combine_videos()
+            # call site for why this matters.
+            command += ["-t", f"{duration:.3f}"]
+        command += [
             "-c:v",
             codec,
             "-threads",
@@ -339,6 +374,7 @@ def concat_video_clips_with_ffmpeg(
             "yuv420p",
             output_file,
         ]
+        return command
 
     def run_concat(codec: str):
         command = build_command(codec)
@@ -722,23 +758,36 @@ def combine_videos(
     # if there is only one clip, use it directly
     if len(processed_clips) == 1:
         logger.info("using single clip directly")
-        shutil.copy(processed_clips[0].file_path, combined_video_path)
+        if processed_clips[0].duration > required_video_duration + _VIDEO_DURATION_TRIM_TOLERANCE:
+            _trim_video_with_ffmpeg(processed_clips[0].file_path, combined_video_path, required_video_duration)
+        else:
+            shutil.copy(processed_clips[0].file_path, combined_video_path)
         delete_files([processed_clips[0].file_path])
         logger.info("video combining completed")
         return combined_video_path
 
     clip_files = [clip.file_path for clip in processed_clips]
     logger.info(f"concatenating {len(clip_files)} clips with ffmpeg")
+    # Clips are appended in whole max_clip_duration-sized chunks until the
+    # running total crosses required_video_duration (see the looping block
+    # above), which can overshoot the target by nearly a full chunk - e.g. a
+    # 46s voiceover landing on a 50s video. Nothing downstream ever trimmed
+    # that excess, so the final render's audio track (BGM stretched/looped to
+    # match the video's length in generate_video()) ran several seconds past
+    # the voiceover, fading to near-silence instead of ending with it. Capping
+    # the concat output here, in the same ffmpeg pass, closes the gap at the
+    # source rather than papering over it downstream.
     concat_video_clips_with_ffmpeg(
         clip_files=clip_files,
         output_file=combined_video_path,
         threads=threads,
         output_dir=output_dir,
+        duration=required_video_duration,
     )
-    
+
     # clean temp files
     delete_files(clip_files)
-            
+
     logger.info("video combining completed")
     return combined_video_path
 

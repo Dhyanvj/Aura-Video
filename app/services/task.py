@@ -8,7 +8,7 @@ from loguru import logger
 from app.config import config
 from app.models import const
 from app.models.schema import VideoConcatMode, VideoParams
-from app.services import llm, material, subtitle, twelvelabs, video, voice
+from app.services import audio_analysis, llm, material, subtitle, twelvelabs, video, voice
 from app.services import state as sm
 from app.utils import file_security, utils
 
@@ -170,18 +170,39 @@ def generate_audio(task_id, params, video_script):
             """.strip()
             )
             return None, None, None
-        audio_duration = math.ceil(voice.get_audio_duration(sub_maker))
-        if audio_duration == 0:
-            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
-            logger.error("failed to get audio duration.")
+
+        # Root-cause guard: a TTS provider can report word/sentence-boundary
+        # metadata (which is all the checks above validate) without actually
+        # having streamed a full, audible audio payload - e.g. edge-tts
+        # dropping the audio chunks on a flaky connection while still
+        # emitting boundary events. That produced a "successful" SubMaker
+        # backed by a silent or truncated file with nothing downstream ever
+        # noticing (audio_present QA only checks for a stream, not audible
+        # content). Validate the real file, not provider-supplied metadata.
+        audible, reason = audio_analysis.check_audible(audio_file)
+        if not audible:
+            failure_reason = f"TTS produced unusable audio: {reason}"
+            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED, failure_reason=failure_reason)
+            logger.error(f"task {task_id}: {failure_reason}")
             return None, None, None
+
+        audio_duration = math.ceil(audio_analysis.probe_audio_duration(audio_file))
         return audio_file, audio_duration, sub_maker
     else:
         logger.info(f"using custom audio file: {custom_audio_file}")
         audio_duration = voice.get_audio_duration(custom_audio_file)
         if audio_duration == 0:
-            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+            sm.state.update_task(
+                task_id, state=const.TASK_STATE_FAILED, failure_reason="Custom audio file has zero duration"
+            )
             logger.error("failed to get audio duration from custom audio file.")
+            return None, None, None
+
+        audible, reason = audio_analysis.check_audible(custom_audio_file)
+        if not audible:
+            failure_reason = f"Custom audio file is unusable: {reason}"
+            sm.state.update_task(task_id, state=const.TASK_STATE_FAILED, failure_reason=failure_reason)
+            logger.error(f"task {task_id}: {failure_reason}")
             return None, None, None
         return custom_audio_file, audio_duration, None
 
@@ -370,7 +391,13 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         task_id, params, video_script
     )
     if not audio_file:
-        sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
+        # generate_audio() already set state=FAILED with a specific,
+        # actionable failure_reason before returning - do not call
+        # update_task() again here. MemoryState.update_task() replaces the
+        # entire stored task dict rather than merging fields, so a second,
+        # reason-less call at this point would silently wipe that reason out
+        # from under the caller (Producer.run() reads it to build the
+        # exception message the project's Failed reason comes from).
         return
 
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=30)

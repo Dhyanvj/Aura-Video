@@ -369,7 +369,10 @@ def _produce_and_review(project_id: int, topic: str, niche: str, brief: Creative
         video_path = project.video_path
     reviewer = QualityReviewer(project_id)
     qa_report = reviewer.review(
-        video_path=video_path, script=brief.script, subtitle_path=final_state.get("subtitle_path")
+        video_path=video_path,
+        script=brief.script,
+        subtitle_path=final_state.get("subtitle_path"),
+        expected_audio_duration=final_state.get("audio_duration"),
     )
     _append_qa_report(project_id, qa_report)
 
