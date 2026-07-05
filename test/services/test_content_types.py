@@ -53,8 +53,26 @@ class TestContentTypeAndSeriesEndpoints(unittest.TestCase):
     def test_list_content_types_returns_seeded_built_ins(self):
         response = self.client.get("/api/v1/content-types")
         self.assertEqual(response.status_code, 200)
-        ids = {t["id"] for t in response.json()["data"]["content_types"]}
+        types = response.json()["data"]["content_types"]
+        ids = {t["id"] for t in types}
         self.assertEqual(ids, {"motivational", "fun_facts", "ai_news", "world_news", "trending_now"})
+        # Every built-in type must have a non-empty description for the New
+        # Video card copy.
+        for t in types:
+            self.assertTrue(t["description"], msg=f"{t['id']} has no description")
+
+    def test_motivational_template_reflects_the_quote_lesson_rework(self):
+        response = self.client.get("/api/v1/content-types")
+        motivational = next(t for t in response.json()["data"]["content_types"] if t["id"] == "motivational")
+        self.assertEqual(motivational["label"], "Motivational Quotes & Life Lessons")
+        self.assertEqual(motivational["scriptcraft_overrides"]["structure"], "quote_or_lesson_centered")
+
+    def test_update_content_type_persists_description(self):
+        response = self.client.put(
+            "/api/v1/content-types/fun_facts", json={"description": "A custom description."}
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["description"], "A custom description.")
 
     def test_update_content_type_persists_editable_fields(self):
         response = self.client.put(

@@ -9,9 +9,23 @@ from app.db.models import ContentTypeTemplate
 DEFAULT_CONTENT_TYPES: list[dict] = [
     {
         "id": "motivational",
-        "label": "Motivational",
-        "default_duration_s": 50,
-        "scriptcraft_overrides": {"structure": "story-arc", "cta_style": "woven-into-payoff"},
+        "label": "Motivational Quotes & Life Lessons",
+        "description": (
+            "One real, attributed quote or concrete life lesson per episode - a relatable "
+            "struggle, the quote/lesson shown on screen, what it means in practice, and a "
+            "reflective close."
+        ),
+        "default_duration_s": 45,
+        "scriptcraft_overrides": {
+            "structure": "quote_or_lesson_centered",
+            "beats": [
+                "relatable_struggle_hook",
+                "quote_or_lesson_centerpiece",
+                "practical_unpacking",
+                "reflective_closing",
+            ],
+            "centerpiece_on_screen": True,
+        },
         "visual_strategy": {"stock_score_threshold": 6.0, "ai_gen_allowed": True, "ai_video_allowed": False},
         "voice_style": "warm, confident narrator",
         "subtitle_theme": "minimal_elegant",
@@ -24,6 +38,7 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
     {
         "id": "fun_facts",
         "label": "Fun Facts",
+        "description": "One specific, verifiable fact per episode, told fast and punchy.",
         "default_duration_s": 40,
         "scriptcraft_overrides": {"structure": "episodic", "one_fact_per_scene": True},
         "visual_strategy": {"stock_score_threshold": 6.0, "ai_gen_allowed": True, "ai_video_allowed": False},
@@ -38,6 +53,7 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
     {
         "id": "ai_news",
         "label": "AI News",
+        "description": "A single specific AI news story from the last 24 hours, with sources.",
         "default_duration_s": 45,
         "scriptcraft_overrides": {"structure": "news-brief", "tone": "neutral-enthusiast"},
         "visual_strategy": {"stock_score_threshold": 6.5, "ai_gen_allowed": True, "ai_video_allowed": False},
@@ -52,6 +68,7 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
     {
         "id": "world_news",
         "label": "World News",
+        "description": "A single verified world news story from the last 24 hours, sober tone.",
         "default_duration_s": 45,
         "scriptcraft_overrides": {"structure": "news-brief", "tone": "sober"},
         "visual_strategy": {"stock_score_threshold": 7.0, "ai_gen_allowed": False, "ai_video_allowed": False},
@@ -66,6 +83,7 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
     {
         "id": "trending_now",
         "label": "Trending Now",
+        "description": "A specific trend or event that's blowing up right now, turned around fast.",
         "default_duration_s": 35,
         "scriptcraft_overrides": {"structure": "fast-hook", "pacing": "fastest"},
         "visual_strategy": {"stock_score_threshold": 5.5, "ai_gen_allowed": False, "ai_video_allowed": False},
@@ -79,6 +97,37 @@ DEFAULT_CONTENT_TYPES: list[dict] = [
     },
 ]
 
+# One-time content migrations for built-in rows that already exist in an
+# upgraded database. seed_content_types() never overwrites a row a user has
+# actually edited, so a developer-authored content revision (like the
+# Motivational rework below) needs its own narrow, guarded update: apply it
+# only if the row still matches the exact old default, never if the user
+# has since customized it.
+_MIGRATIONS = [
+    {
+        "id": "motivational",
+        "if_label_is": "Motivational",
+        "set": {
+            "label": "Motivational Quotes & Life Lessons",
+            "description": (
+                "One real, attributed quote or concrete life lesson per episode - a relatable "
+                "struggle, the quote/lesson shown on screen, what it means in practice, and a "
+                "reflective close."
+            ),
+            "scriptcraft_overrides": {
+                "structure": "quote_or_lesson_centered",
+                "beats": [
+                    "relatable_struggle_hook",
+                    "quote_or_lesson_centerpiece",
+                    "practical_unpacking",
+                    "reflective_closing",
+                ],
+                "centerpiece_on_screen": True,
+            },
+        },
+    },
+]
+
 
 def seed_content_types(session) -> None:
     """Insert any built-in template whose id isn't already present. Never
@@ -88,6 +137,22 @@ def seed_content_types(session) -> None:
         if defaults["id"] in existing_ids:
             continue
         session.add(ContentTypeTemplate(**defaults))
+    session.commit()
+
+    _apply_migrations(session)
+
+
+def _apply_migrations(session) -> None:
+    from app.db.models import utcnow
+
+    for migration in _MIGRATIONS:
+        template = session.get(ContentTypeTemplate, migration["id"])
+        if template is None or template.label != migration["if_label_is"]:
+            continue
+        for field, value in migration["set"].items():
+            setattr(template, field, value)
+        template.updated_at = utcnow()
+        session.add(template)
     session.commit()
 
 

@@ -11,12 +11,12 @@ from sqlmodel import create_engine, select
 
 import app.db.session as db_session
 from app.agents import orchestrator
-from app.agents.schemas import CreativeBrief, MetadataDraft
+from app.agents.schemas import CreativeBrief, MetadataDraft, QuoteOrLesson
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject
 
 
-def _brief_recommending(voice: str) -> CreativeBrief:
+def _brief_recommending(voice: str, quote_or_lesson=None) -> CreativeBrief:
     return CreativeBrief(
         script="A short punchy script.",
         search_terms=["clip a"],
@@ -25,6 +25,7 @@ def _brief_recommending(voice: str) -> CreativeBrief:
         voice_recommendation=voice,
         subtitle_style="bottom",
         metadata_draft=MetadataDraft(working_title="Title", hook_variants=["hook"]),
+        quote_or_lesson=quote_or_lesson,
     )
 
 
@@ -58,6 +59,39 @@ class TestContentTypeSeeding(unittest.TestCase):
         with session_scope() as session:
             template = session.get(ContentTypeTemplate, "fun_facts")
         self.assertEqual(template.default_duration_s, 999)
+
+    def test_upgrade_migration_applies_motivational_rework_to_untouched_row(self):
+        # Simulates a database from before the Part 2 rework: the row still
+        # has the old built-in label, so the narrow, guarded migration must
+        # bring it up to the new content on the next startup.
+        with session_scope() as session:
+            template = session.get(ContentTypeTemplate, "motivational")
+            template.label = "Motivational"
+            template.scriptcraft_overrides = {"structure": "story-arc", "cta_style": "woven-into-payoff"}
+            session.add(template)
+            session.commit()
+
+        db_session.init_db()
+
+        with session_scope() as session:
+            template = session.get(ContentTypeTemplate, "motivational")
+        self.assertEqual(template.label, "Motivational Quotes & Life Lessons")
+        self.assertEqual(template.scriptcraft_overrides["structure"], "quote_or_lesson_centered")
+
+    def test_upgrade_migration_skips_a_user_renamed_row(self):
+        # If the user already renamed/customized the row, the migration must
+        # not clobber their edit.
+        with session_scope() as session:
+            template = session.get(ContentTypeTemplate, "motivational")
+            template.label = "My Custom Motivational Series"
+            session.add(template)
+            session.commit()
+
+        db_session.init_db()
+
+        with session_scope() as session:
+            template = session.get(ContentTypeTemplate, "motivational")
+        self.assertEqual(template.label, "My Custom Motivational Series")
 
 
 class TestSeriesBible(unittest.TestCase):
@@ -177,6 +211,76 @@ class TestSeriesBible(unittest.TestCase):
         self.assertEqual(len(lines), 5)
         self.assertEqual(lines[0], "Episode 3: topic 3")
         self.assertEqual(lines[-1], "Episode 7: topic 7")
+
+
+class TestQuoteOrLessonWiring(unittest.TestCase):
+    """
+    Part 2 (Motivational Quotes & Life Lessons): the project's content type
+    must reach CreativeDirector.write(), and a quote/lesson centerpiece must
+    reach VideoParams so the renderer knows what to give the on-screen
+    treatment to.
+    """
+
+    def setUp(self):
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        os.remove(self._db_path)
+
+    def _create_project(self, content_type_id=None) -> int:
+        with session_scope() as session:
+            project = VideoProject(
+                status=ProjectStatus.SCRIPTING.value, topic="t", niche="n", content_type_id=content_type_id
+            )
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            return project.id
+
+    def test_write_brief_passes_project_content_type_id_to_creative_director(self):
+        project_id = self._create_project(content_type_id="motivational")
+        quote = QuoteOrLesson(is_quote=False, text="Keep the promise.", attribution=None)
+        with patch(
+            "app.agents.creative_director.CreativeDirector.write",
+            return_value=_brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=quote),
+        ) as mock_write:
+            orchestrator._write_brief(project_id, "discipline", "self-improvement", None)
+
+        self.assertEqual(mock_write.call_args.kwargs["content_type_id"], "motivational")
+
+    def test_video_params_populate_quote_text_and_attribution_for_a_quote(self):
+        project_id = self._create_project(content_type_id="motivational")
+        quote = QuoteOrLesson(is_quote=True, text="The obstacle is the way.", attribution="Ryan Holiday")
+        brief = _brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=quote)
+
+        params = orchestrator._video_params_from_brief(project_id, "discipline", brief)
+
+        self.assertEqual(params.quote_text, "The obstacle is the way.")
+        self.assertEqual(params.quote_attribution, "Ryan Holiday")
+
+    def test_video_params_omit_attribution_for_a_life_lesson(self):
+        project_id = self._create_project(content_type_id="motivational")
+        lesson = QuoteOrLesson(is_quote=False, text="Discipline is a private vote.", attribution=None)
+        brief = _brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=lesson)
+
+        params = orchestrator._video_params_from_brief(project_id, "discipline", brief)
+
+        self.assertEqual(params.quote_text, "Discipline is a private vote.")
+        self.assertIsNone(params.quote_attribution)
+
+    def test_video_params_have_no_quote_fields_without_a_centerpiece(self):
+        project_id = self._create_project(content_type_id="fun_facts")
+        brief = _brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=None)
+
+        params = orchestrator._video_params_from_brief(project_id, "ocean facts", brief)
+
+        self.assertIsNone(params.quote_text)
+        self.assertIsNone(params.quote_attribution)
 
 
 if __name__ == "__main__":

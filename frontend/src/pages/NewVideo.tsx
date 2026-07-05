@@ -113,7 +113,8 @@ export default function NewVideo() {
             }`}
           >
             <div className="mb-1 text-sm font-semibold text-slate-100">{t.label}</div>
-            <div className="text-xs text-slate-400">
+            {t.description && <p className="mb-1 text-xs text-slate-400">{t.description}</p>}
+            <div className="text-xs text-slate-500">
               ~{t.default_duration_s}s &middot; {t.default_quality_preset}
             </div>
             <div className="mt-2 flex flex-wrap gap-1">

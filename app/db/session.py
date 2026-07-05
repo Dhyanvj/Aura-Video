@@ -17,6 +17,9 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "series_id": "INTEGER",
     "episode_number": "INTEGER",
 }
+_CONTENTTYPETEMPLATE_NEW_COLUMNS = {
+    "description": "TEXT NOT NULL DEFAULT ''",
+}
 
 
 def _add_missing_columns(engine, table: str, columns: dict) -> None:
@@ -35,6 +38,7 @@ def init_db():
 
     SQLModel.metadata.create_all(engine)
     _add_missing_columns(engine, "videoproject", _VIDEOPROJECT_NEW_COLUMNS)
+    _add_missing_columns(engine, "contenttypetemplate", _CONTENTTYPETEMPLATE_NEW_COLUMNS)
 
     with Session(engine) as session:
         seed_content_types(session)

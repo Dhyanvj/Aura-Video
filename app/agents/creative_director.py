@@ -68,11 +68,61 @@ rule that out explicitly).
 
 {_SEARCH_TERM_GUIDANCE}"""
 
+# Per-content-type structure, appended to _SYSTEM_PROMPT when the project has
+# a content_type_id with a real addendum below. Content types not listed here
+# (fun_facts, ai_news, world_news, trending_now) still use the base prompt
+# unchanged - only Motivational has a distinct required structure so far.
+_MOTIVATIONAL_ADDENDUM = """This video is for "Motivational Quotes & Life Lessons": build the entire script
+around ONE specific, real quote (correctly attributed) OR ONE concrete, original life
+lesson - never both, and never a vague collection of generic encouragement.
+
+Follow this exact structure:
+1. Hook (first ~2s): open on a relatable struggle the viewer will recognize in
+   themselves - not the quote yet.
+2. Centerpiece: state the quote or lesson clearly and completely, word for word, as its
+   own moment in the script - this exact line will be shown on screen as large styled
+   text, so it must be a single, complete, self-contained sentence (or two short
+   sentences), not split across other narration.
+3. Unpacking (2-3 sentences): explain concretely what the quote/lesson means in
+   practice - a real behavior or choice, not more abstract encouragement.
+4. Reflective closing line: land the point; don't append a generic "follow for more" -
+   weave any call-to-action into this closing thought instead.
+
+Populate quote_or_lesson:
+- is_quote=true only if you're citing a real, well-documented quote from an identifiable
+  person. Prefer quotes you're confident are both worded correctly AND correctly
+  attributed - if you're not confident about the exact wording or who said it, set
+  is_quote=false and write it as an original life lesson instead (no attribution needed).
+  A wrong attribution is worse than no attribution.
+- text must match, verbatim, the exact sentence(s) you wrote as the centerpiece in step 2.
+- attribution is the person's name only (e.g. "Marcus Aurelius"), required when is_quote
+  is true, omitted otherwise.
+- attribution_confidence is your own honest self-assessment - "high" only if you're
+  genuinely confident from training knowledge that this is both correctly worded and
+  correctly attributed; "medium" or "low" otherwise. A quality reviewer rejects the video
+  if this isn't "high" for a real quote, so default to a life lesson rather than guessing.
+
+Keep visuals calm and cinematic, not high-energy or comedic."""
+
+_CONTENT_TYPE_ADDENDA = {
+    "motivational": _MOTIVATIONAL_ADDENDUM,
+}
+# Content types where quote_or_lesson must be populated on the brief - a
+# missing centerpiece means the on-screen treatment (the whole point of the
+# content type) can't be rendered.
+_REQUIRES_QUOTE_OR_LESSON = {"motivational"}
+
 
 class CreativeDirector(BaseAgent):
     agent_name = "creative_director"
 
-    def write(self, topic: str, niche: str = "", revision_notes: Optional[str] = None) -> CreativeBrief:
+    def write(
+        self,
+        topic: str,
+        niche: str = "",
+        revision_notes: Optional[str] = None,
+        content_type_id: Optional[str] = None,
+    ) -> CreativeBrief:
         payload = {
             "topic": topic,
             "niche": niche,
@@ -80,6 +130,9 @@ class CreativeDirector(BaseAgent):
             "available_voices": self._list_available_voices(),
         }
         system = _SYSTEM_PROMPT
+        addendum = _CONTENT_TYPE_ADDENDA.get(content_type_id)
+        if addendum:
+            system += f"\n\n{addendum}"
         if revision_notes:
             payload["revision_notes"] = revision_notes
             system += (
@@ -88,7 +141,15 @@ class CreativeDirector(BaseAgent):
                 f"\n{revision_notes}"
             )
 
-        return self.call_json(system=system, user=utils.to_json(payload), response_model=CreativeBrief)
+        brief = self.call_json(system=system, user=utils.to_json(payload), response_model=CreativeBrief)
+
+        if content_type_id in _REQUIRES_QUOTE_OR_LESSON and brief.quote_or_lesson is None:
+            raise ValueError(
+                f"Creative Director did not populate quote_or_lesson for content type "
+                f"{content_type_id!r}, which requires an on-screen quote/lesson centerpiece"
+            )
+
+        return brief
 
     def revise_search_terms(self, script: str, niche: str, revision_notes: str) -> List[str]:
         """

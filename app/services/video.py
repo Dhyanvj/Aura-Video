@@ -3,6 +3,7 @@ import itertools
 import io
 import os
 import random
+import re
 import gc
 import shutil
 import subprocess
@@ -10,7 +11,7 @@ import sys
 import tempfile
 from contextlib import redirect_stdout
 from functools import lru_cache
-from typing import List
+from typing import List, Optional, Tuple
 from loguru import logger
 import numpy as np
 from moviepy import (
@@ -792,6 +793,40 @@ def combine_videos(
     return combined_video_path
 
 
+def _normalize_for_quote_matching(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9\s]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def find_quote_time_range(
+    subtitles: list, quote_text: str
+) -> Optional[Tuple[float, float]]:
+    """
+    Locates the on-screen window for a quote/lesson centerpiece: any
+    subtitle line whose text overlaps the quote (either contains it or is
+    contained by it, after normalizing case/punctuation) contributes to the
+    window: the earliest matching start to the latest matching end. The
+    quote may span one subtitle line or a few, depending on how the
+    subtitle stage split up that sentence. Returns None if nothing matches.
+    """
+    normalized_quote = _normalize_for_quote_matching(quote_text or "")
+    if not normalized_quote:
+        return None
+
+    matches = []
+    for (start, end), phrase in subtitles:
+        normalized_phrase = _normalize_for_quote_matching(phrase)
+        if not normalized_phrase:
+            continue
+        if normalized_phrase in normalized_quote or normalized_quote in normalized_phrase:
+            matches.append((start, end))
+
+    if not matches:
+        return None
+    return min(s for s, _ in matches), max(e for _, e in matches)
+
+
 def wrap_text(text, max_width, font="Arial", fontsize=60):
     # 字幕换行必须在真正创建 TextClip 前完成，否则 MoviePy 只会按原始文本
     # 计算渲染区域。这里用 PIL 按当前字体和字号测量宽度，确保每一行都尽量
@@ -1128,6 +1163,46 @@ def generate_video(
             _clip = _clip.with_position(("center", "center"))
         return _clip
 
+    def create_quote_card_clip(start_time: float, end_time: float, quote_text: str, attribution: Optional[str]):
+        # Quote/lesson-centered content types (Motivational Quotes & Life
+        # Lessons): the centerpiece line gets a distinct full-screen
+        # treatment - larger, centered, with the attribution as a secondary
+        # line - instead of blending in as a normal subtitle.
+        quote_font_size = int(params.font_size * 1.5)
+        max_width = int(video_width * 0.82)
+        wrapped_quote, _ = wrap_text(quote_text, max_width=max_width, font=font_path, fontsize=quote_font_size)
+        quote_clip = TextClip(
+            text=wrapped_quote,
+            font=font_path,
+            font_size=quote_font_size,
+            color=params.text_fore_color,
+            stroke_color=params.stroke_color,
+            stroke_width=params.stroke_width,
+            interline=int(quote_font_size * 0.25),
+            size=(max_width, None),
+            text_align="center",
+        ).with_position((0, 0))
+
+        clips = [quote_clip]
+        total_height = quote_clip.h
+        if attribution:
+            gap = int(quote_font_size * 0.5)
+            attribution_clip = TextClip(
+                text=f"— {attribution}",
+                font=font_path,
+                font_size=max(18, int(params.font_size * 0.6)),
+                color=params.text_fore_color,
+                size=(max_width, None),
+                text_align="center",
+            ).with_position((0, quote_clip.h + gap))
+            clips.append(attribution_clip)
+            total_height = quote_clip.h + gap + attribution_clip.h
+
+        card = CompositeVideoClip(clips, size=(max_width, total_height)) if len(clips) > 1 else quote_clip
+        card = card.with_position(("center", "center"))
+        duration = end_time - start_time
+        return card.with_start(start_time).with_end(end_time).with_duration(duration)
+
     video_clip = _open_video_clip_quietly(video_path)
     audio_clip = AudioFileClip(audio_path).with_effects(
         [afx.MultiplyVolume(params.voice_volume)]
@@ -1144,10 +1219,20 @@ def generate_video(
         sub = SubtitlesClip(
             subtitles=subtitle_path, encoding="utf-8", make_textclip=make_textclip
         )
+        quote_range = find_quote_time_range(sub.subtitles, params.quote_text) if params.quote_text else None
         text_clips = []
         for item in sub.subtitles:
+            (item_start, item_end), _phrase = item
+            if quote_range and item_start >= quote_range[0] and item_end <= quote_range[1]:
+                # Rendered as the dedicated quote card below instead of a
+                # normal subtitle line.
+                continue
             clip = create_text_clip(subtitle_item=item)
             text_clips.append(clip)
+        if quote_range:
+            text_clips.append(
+                create_quote_card_clip(quote_range[0], quote_range[1], params.quote_text, params.quote_attribution)
+            )
         video_clip = CompositeVideoClip([video_clip, *text_clips])
 
     bgm_file = get_bgm_file(bgm_type=params.bgm_type, bgm_file=params.bgm_file)

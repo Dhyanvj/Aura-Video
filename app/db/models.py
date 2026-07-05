@@ -104,6 +104,7 @@ class ContentTypeTemplate(SQLModel, table=True):
 
     id: str = Field(primary_key=True)  # slug, e.g. "motivational"
     label: str
+    description: str = ""  # shown on the New Video content-type card
     default_duration_s: int
     scriptcraft_overrides: dict = Field(default_factory=dict, sa_column=Column(JSON))
     visual_strategy: dict = Field(default_factory=dict, sa_column=Column(JSON))

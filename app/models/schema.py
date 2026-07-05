@@ -111,6 +111,14 @@ class VideoParams(BaseModel):
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)
 
+    # Quote/lesson-centered content types (e.g. Motivational Quotes & Life
+    # Lessons): when set, the spoken line matching this text gets a distinct
+    # full-screen "quote card" treatment instead of a normal subtitle line.
+    # quote_attribution renders as a secondary line under the quote and is
+    # never spoken by TTS.
+    quote_text: Optional[str] = None
+    quote_attribution: Optional[str] = None
+
 
 class SubtitleRequest(BaseModel):
     video_script: str

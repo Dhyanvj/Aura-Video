@@ -227,8 +227,14 @@ def _append_series_summary(series_id: int, episode_number: Optional[int], topic:
 
 
 def _write_brief(project_id: int, topic: str, niche: str, revision_notes: Optional[str]) -> CreativeBrief:
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        content_type_id = project.content_type_id if project else None
+
     director = CreativeDirector(project_id)
-    brief = director.write(topic=topic, niche=niche, revision_notes=revision_notes)
+    brief = director.write(
+        topic=topic, niche=niche, revision_notes=revision_notes, content_type_id=content_type_id
+    )
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         project.brief = brief.model_dump()
@@ -294,6 +300,7 @@ def _resolve_voice_name(project_id: int, brief: CreativeBrief) -> str:
 
 
 def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) -> VideoParams:
+    quote = brief.quote_or_lesson
     return VideoParams(
         video_subject=topic,
         video_script=brief.script,
@@ -304,6 +311,8 @@ def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) 
         voice_name=_resolve_voice_name(project_id, brief),
         bgm_type="random",
         bgm_file=brief.bgm_file or "",
+        quote_text=quote.text if quote else None,
+        quote_attribution=(quote.attribution if quote and quote.is_quote else None),
     )
 
 
@@ -373,6 +382,7 @@ def _produce_and_review(project_id: int, topic: str, niche: str, brief: Creative
         script=brief.script,
         subtitle_path=final_state.get("subtitle_path"),
         expected_audio_duration=final_state.get("audio_duration"),
+        quote_or_lesson=brief.quote_or_lesson,
     )
     _append_qa_report(project_id, qa_report)
 

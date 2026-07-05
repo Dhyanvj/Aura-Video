@@ -47,6 +47,14 @@ function ContentTypeRow({
       </button>
       {open && (
         <div className="mt-3 flex flex-col gap-3">
+          <div>
+            <label className="mb-1 block text-xs text-slate-400">Description (shown on the New Video card)</label>
+            <input
+              defaultValue={template.description}
+              onBlur={(e) => save({ description: e.target.value })}
+              className="w-full rounded border border-border bg-panel px-2 py-1.5 text-sm text-slate-100"
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-xs text-slate-400">Label</label>

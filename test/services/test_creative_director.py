@@ -7,7 +7,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.agents import creative_director
 from app.agents.creative_director import CreativeDirector
-from app.agents.schemas import SearchTermsRevision
+from app.agents.schemas import CreativeBrief, MetadataDraft, QuoteOrLesson, SearchTermsRevision
+
+
+def _fake_brief(quote_or_lesson=None) -> CreativeBrief:
+    return CreativeBrief(
+        script="A short punchy script.",
+        search_terms=["clip a"],
+        music_direction="calm",
+        bgm_file=None,
+        voice_recommendation="en-US-GuyNeural-Male",
+        subtitle_style="bottom",
+        metadata_draft=MetadataDraft(working_title="t", hook_variants=[]),
+        quote_or_lesson=quote_or_lesson,
+    )
 
 
 class TestCreativeDirectorTargetedRevision(unittest.TestCase):
@@ -45,6 +58,53 @@ class TestCreativeDirectorTargetedRevision(unittest.TestCase):
         # comfortably below 140.
         self.assertIn("110-130 words", creative_director._SYSTEM_PROMPT)
         self.assertNotIn("140-160 words", creative_director._SYSTEM_PROMPT)
+
+
+class TestCreativeDirectorContentTypeStructure(unittest.TestCase):
+    """
+    Part 2: Motivational Quotes & Life Lessons needs a distinct script
+    structure (quote/lesson-centered) that other content types don't have
+    yet - this is the mechanism that makes that per-type behavior possible.
+    """
+
+    def test_write_appends_motivational_addendum_for_motivational_content_type(self):
+        director = CreativeDirector(project_id=None)
+        quote = QuoteOrLesson(is_quote=True, text="The obstacle is the way.", attribution="Ryan Holiday")
+        with patch.object(director, "call_json", return_value=_fake_brief(quote_or_lesson=quote)) as mock_call:
+            director.write(topic="discipline", niche="self-improvement", content_type_id="motivational")
+
+        _, kwargs = mock_call.call_args
+        self.assertIn("Motivational Quotes & Life Lessons", kwargs["system"])
+        self.assertIn("quote_or_lesson", kwargs["system"])
+
+    def test_write_does_not_append_addendum_for_other_content_types(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(topic="whales", niche="ocean", content_type_id="fun_facts")
+
+        _, kwargs = mock_call.call_args
+        self.assertNotIn("Motivational Quotes & Life Lessons", kwargs["system"])
+
+    def test_write_does_not_require_addendum_content_for_none_content_type(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()):
+            # Must not raise even though quote_or_lesson is None - only
+            # content types in _REQUIRES_QUOTE_OR_LESSON need it populated.
+            brief = director.write(topic="whales", niche="ocean", content_type_id=None)
+        self.assertIsNone(brief.quote_or_lesson)
+
+    def test_write_raises_when_motivational_brief_is_missing_quote_or_lesson(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief(quote_or_lesson=None)):
+            with self.assertRaises(ValueError):
+                director.write(topic="discipline", niche="self-improvement", content_type_id="motivational")
+
+    def test_write_succeeds_when_motivational_brief_has_quote_or_lesson(self):
+        director = CreativeDirector(project_id=None)
+        lesson = QuoteOrLesson(is_quote=False, text="Discipline is a private vote for who you want to become.")
+        with patch.object(director, "call_json", return_value=_fake_brief(quote_or_lesson=lesson)):
+            brief = director.write(topic="discipline", niche="self-improvement", content_type_id="motivational")
+        self.assertEqual(brief.quote_or_lesson.is_quote, False)
 
 
 if __name__ == "__main__":

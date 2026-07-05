@@ -22,6 +22,17 @@ class MetadataDraft(BaseModel):
     hook_variants: List[str] = Field(default_factory=list)
 
 
+class QuoteOrLesson(BaseModel):
+    is_quote: bool  # True = a real, attributed quote; False = an original life lesson (no attribution)
+    text: str  # exact wording, spoken verbatim as part of the script
+    attribution: Optional[str] = None  # e.g. "Marcus Aurelius" - required when is_quote is True
+    # Self-assessed confidence that the wording+attribution pairing is
+    # correct, from the model's own knowledge. There is no independent
+    # source verification yet (that lands with the Researcher agent) - this
+    # is an interim, best-effort signal QA uses to reject risky quotes.
+    attribution_confidence: str = "high"  # high | medium | low
+
+
 class CreativeBrief(BaseModel):
     script: str
     search_terms: List[str]
@@ -30,6 +41,7 @@ class CreativeBrief(BaseModel):
     voice_recommendation: str
     subtitle_style: str
     metadata_draft: MetadataDraft
+    quote_or_lesson: Optional[QuoteOrLesson] = None
 
 
 class SearchTermsRevision(BaseModel):
@@ -55,6 +67,10 @@ class VisionReview(BaseModel):
     content_policy_flags: List[str] = Field(default_factory=list)
     revision_target: Optional[str] = None  # creative_director | producer
     revision_notes: Optional[str] = None
+    # Only set when a quote was supplied for the reviewer to check, from the
+    # model's own knowledge (no independent source lookup yet - that's the
+    # Researcher agent's job once it exists).
+    quote_attribution_check: Optional[str] = None  # correct | incorrect | uncertain
 
 
 class QAReport(BaseModel):

@@ -3,7 +3,7 @@ import shutil
 from typing import Optional
 
 from app.agents.base import BaseAgent
-from app.agents.schemas import QAReport, TechnicalCheck, VisionReview
+from app.agents.schemas import QAReport, QuoteOrLesson, TechnicalCheck, VisionReview
 from app.services import qa as qa_service
 
 _SYSTEM_PROMPT = """You are the Quality Reviewer for a short-form vertical video pipeline.
@@ -21,6 +21,15 @@ Give an overall verdict: "pass" if everything looks acceptable, "revise" if ther
 problems, "fail" if the video is unusable. If "revise", set revision_target to
 "creative_director" for script/narrative problems or "producer" for visual/material problems,
 and give concrete, actionable revision_notes."""
+
+_QUOTE_CHECK_INSTRUCTION = """
+You are also given a quote this video attributes to a named person. From your own training
+knowledge (no external lookup available), assess whether this wording and attribution pairing
+is accurate. Set quote_attribution_check to "correct" only if you're confident both the exact
+wording and the named author are right; "incorrect" if you're confident it's wrong or the quote
+is commonly misattributed to this person; "uncertain" if you don't have enough confidence
+either way. Err toward "uncertain" rather than "correct" when in doubt - a wrongly-confirmed
+misattribution is worse than a false alarm."""
 
 
 # Technical checks that only a script change can fix - routing these to
@@ -40,6 +49,7 @@ class QualityReviewer(BaseAgent):
         script: str,
         subtitle_path: Optional[str] = None,
         expected_audio_duration: Optional[float] = None,
+        quote_or_lesson: Optional[QuoteOrLesson] = None,
     ) -> QAReport:
         technical_checks, duration = qa_service.run_technical_checks(
             video_path, subtitle_path, expected_audio_duration
@@ -55,7 +65,7 @@ class QualityReviewer(BaseAgent):
 
         try:
             if frame_paths:
-                vision = self._run_vision_review(script, technical_checks, frame_paths)
+                vision = self._run_vision_review(script, technical_checks, frame_paths, quote_or_lesson)
             else:
                 vision = VisionReview(
                     overall="revise",
@@ -84,6 +94,26 @@ class QualityReviewer(BaseAgent):
             # the revision to the one agent that can't fix it.
             revision_target = "creative_director"
 
+        if quote_or_lesson is not None and quote_or_lesson.is_quote and vision.quote_attribution_check in (
+            "incorrect",
+            "uncertain",
+        ):
+            # A misattributed quote is a hard fail per spec, not a fixable
+            # detail Producer can patch with different footage - only a
+            # rewrite (a different quote, or falling back to a life lesson)
+            # can fix this, so it always routes to creative_director. There's
+            # no independent source lookup yet (that's the Researcher agent),
+            # so this is the model's own knowledge - "uncertain" is treated
+            # as unsafe to publish, same as a confirmed wrong attribution.
+            overall = "fail" if vision.quote_attribution_check == "incorrect" else "revise"
+            revision_target = "creative_director"
+            note = (
+                f"Quote attribution check: {vision.quote_attribution_check} - "
+                f'"{quote_or_lesson.text}" attributed to {quote_or_lesson.attribution!r} '
+                "could not be confirmed as accurate."
+            )
+            revision_notes = f"{revision_notes} {note}".strip() if revision_notes else note
+
         report = QAReport(
             overall=overall,
             technical_checks=[TechnicalCheck(name=c.name, passed=c.passed, detail=c.detail) for c in technical_checks],
@@ -95,19 +125,28 @@ class QualityReviewer(BaseAgent):
         self.log_event("output", message=f"QA verdict: {report.overall}", payload=report.model_dump())
         return report
 
-    def _run_vision_review(self, script: str, technical_checks, frame_paths: list[str]) -> VisionReview:
+    def _run_vision_review(
+        self,
+        script: str,
+        technical_checks,
+        frame_paths: list[str],
+        quote_or_lesson: Optional[QuoteOrLesson] = None,
+    ) -> VisionReview:
         checklist = "\n".join(f"- {c.name}: {'PASS' if c.passed else 'FAIL'} ({c.detail})" for c in technical_checks)
-        content = [
-            {
-                "type": "text",
-                "text": (
-                    f"Script:\n{script}\n\n"
-                    f"Automated technical checks:\n{checklist}\n\n"
-                    f"Below are {len(frame_paths)} evenly spaced frames from the video, in chronological "
-                    "order. Frame index in frame_findings must match their order here, starting at 0."
-                ),
-            }
-        ]
+        system = _SYSTEM_PROMPT
+        text = (
+            f"Script:\n{script}\n\n"
+            f"Automated technical checks:\n{checklist}\n\n"
+            f"Below are {len(frame_paths)} evenly spaced frames from the video, in chronological "
+            "order. Frame index in frame_findings must match their order here, starting at 0."
+        )
+        if quote_or_lesson is not None and quote_or_lesson.is_quote:
+            system += _QUOTE_CHECK_INSTRUCTION
+            text += (
+                f'\n\nQuote to check: "{quote_or_lesson.text}" - attributed to '
+                f"{quote_or_lesson.attribution!r}."
+            )
+        content = [{"type": "text", "text": text}]
         for index, frame_path in enumerate(frame_paths):
             content.append({"type": "text", "text": f"Frame {index}:"})
             content.append(
@@ -120,7 +159,7 @@ class QualityReviewer(BaseAgent):
                     },
                 }
             )
-        return self.call_json_with_content(system=_SYSTEM_PROMPT, user=content, response_model=VisionReview)
+        return self.call_json_with_content(system=system, user=content, response_model=VisionReview)
 
     @staticmethod
     def _encode_image(path: str) -> str:

@@ -83,6 +83,7 @@ export type QualityPreset = "budget" | "standard" | "cinematic";
 export interface ContentTypeTemplate {
   id: string;
   label: string;
+  description: string;
   default_duration_s: number;
   scriptcraft_overrides: Record<string, unknown>;
   visual_strategy: Record<string, unknown>;

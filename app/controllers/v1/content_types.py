@@ -15,6 +15,7 @@ router = new_router()
 
 class UpdateContentTypeRequest(BaseModel):
     label: Optional[str] = None
+    description: Optional[str] = None
     default_duration_s: Optional[int] = None
     scriptcraft_overrides: Optional[dict] = None
     visual_strategy: Optional[dict] = None
@@ -57,6 +58,7 @@ def _template_summary(template: ContentTypeTemplate) -> dict:
     return {
         "id": template.id,
         "label": template.label,
+        "description": template.description,
         "default_duration_s": template.default_duration_s,
         "scriptcraft_overrides": template.scriptcraft_overrides,
         "visual_strategy": template.visual_strategy,
