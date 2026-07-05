@@ -266,11 +266,21 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
                 "no valid materials found, please check the materials and try again."
             )
             return None
+        # Clip-index bridge (docs/DECISIONS_V3.md §4): local materials have no
+        # search term, but are still addressable clips for Producer to record.
+        sm.state.update_task(
+            task_id,
+            materials=[
+                {"search_term": "", "provider": "local", "url": m.url, "local_path": m.url}
+                for m in materials
+            ],
+        )
         return [material_info.url for material_info in materials]
     else:
         logger.info(f"\n\n## downloading videos from {params.video_source}")
         # 顺序匹配模式只在用户显式开启时生效。这里强制素材下载按关键词顺序
         # 轮询，避免某个早期关键词下载太多素材，把后续脚本主题挤出最终时间线。
+        clip_metadata = []
         downloaded_videos = material.download_videos(
             task_id=task_id,
             search_terms=video_terms,
@@ -284,6 +294,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             audio_duration=audio_duration * params.video_count,
             max_clip_duration=params.video_clip_duration,
             match_script_order=params.match_materials_to_script,
+            metadata_out=clip_metadata,
         )
         if not downloaded_videos:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
@@ -291,6 +302,10 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
                 "failed to download videos, maybe the network is not available. if you are in China, please use a VPN."
             )
             return None
+        # Clip-index bridge (docs/DECISIONS_V3.md §4): surfaced via task state
+        # (the same loosely-typed dict "videos"/"subtitle_path" already use)
+        # so Producer can read it from final_state without any new plumbing.
+        sm.state.update_task(task_id, materials=clip_metadata)
         return downloaded_videos
 
 

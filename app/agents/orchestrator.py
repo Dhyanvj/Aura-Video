@@ -16,7 +16,7 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
-from app.services import originality, project_storage
+from app.services import originality, project_storage, storyboard
 from app.services.ws_manager import broadcast_event, broadcast_status
 
 # Content types where a news story older than its freshness window, or one
@@ -651,6 +651,20 @@ def _run_pipeline(
         _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
 
 
+def _record_clip_index(project_id: int, final_state: dict) -> None:
+    """
+    Records this render's clips for the storyboard/per-scene-replacement
+    bridge (docs/DECISIONS_V3.md §4). Same non-fatal treatment as storage
+    materialization - a missing/failed clip index must not fail an
+    otherwise-successful render, but is still surfaced, not swallowed.
+    """
+    try:
+        storyboard.record_clips(project_id, final_state.get("materials") or [])
+    except Exception as exc:  # noqa: BLE001 - must not fail the render pipeline
+        logger.exception(f"project {project_id} clip index recording failed")
+        _log_event(project_id, f"Storyboard clip index update failed (render output is unaffected): {exc}", type_="error")
+
+
 def _materialize_project_storage(project_id: int) -> None:
     """
     Builds/refreshes the human-browsable storage/projects/... folder for this
@@ -685,6 +699,7 @@ def _produce_and_review(
     producer = Producer(project_id)
     final_state = producer.run(params)
     _set_status(project_id, ProjectStatus.RENDERED)
+    _record_clip_index(project_id, final_state)
     _materialize_project_storage(project_id)
 
     _set_status(project_id, ProjectStatus.QA_REVIEW)
@@ -829,17 +844,20 @@ def approve_and_publish(project_id: int, platforms: List[str], thumbnail_path: O
         raise RuntimeError(f"project {project_id} has no rendered video or publish package to publish")
 
     _set_status(project_id, ProjectStatus.APPROVED)
+    _materialize_project_storage(project_id)  # mirrors the new status into project.json
 
     if not config.features.get("publishing_enabled", False):
         # Publishing is on hold (see [features].publishing_enabled in
-        # config.toml): approving a project marks it complete and makes the
-        # rendered video available for download, without ever reaching
-        # Publisher.publish() or the Upload-Post API.
+        # config.toml): approving a project stops at APPROVED - assets stay
+        # exactly where they are (docs/DECISIONS_V3.md §1) and the project
+        # surfaces in an "Approved / Ready to publish" queue view. It no
+        # longer auto-archives here; archiving now only happens via the
+        # explicit mark_as_published() action below, once a human has
+        # actually posted the video somewhere themselves.
         _log_event(
             project_id,
-            "Publishing is paused (features.publishing_enabled=false); marking project complete without publishing",
+            "Publishing is paused (features.publishing_enabled=false); approved and ready to publish manually",
         )
-        _set_status(project_id, ProjectStatus.ARCHIVED)
         return
 
     _log_event(project_id, f"Approved for platforms: {', '.join(platforms)}")
@@ -847,6 +865,42 @@ def approve_and_publish(project_id: int, platforms: List[str], thumbnail_path: O
         target=_run_publish, args=(project_id, video_path, package, platforms, thumbnail_path), daemon=True
     )
     thread.start()
+
+
+def mark_as_published(project_id: int, platform_urls: Optional[List[dict]] = None) -> None:
+    """
+    docs/DECISIONS_V3.md §4: while publishing stays frozen, this is what
+    "Publish" means - the human downloads the approved video, posts it
+    manually wherever they choose, then records that it's live (optionally
+    with the URL(s)) here. Reuses the existing published_posts/published_at
+    columns the real Upload-Post path already writes, tagged source="manual"
+    so Performance Analyst can tell them apart later if that ever matters,
+    while still picking up any pasted YouTube URL for stats the same way.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise ValueError(f"project {project_id} not found")
+        if project.status != ProjectStatus.APPROVED.value:
+            raise PermissionError(
+                f"project {project_id} is not APPROVED (status={project.status}); nothing to mark as published"
+            )
+        existing_posts = list(project.published_posts or [])
+
+    posts = [{**entry, "source": "manual"} for entry in (platform_urls or [])]
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        project.published_posts = existing_posts + posts
+        session.add(project)
+        session.commit()
+
+    _set_status(project_id, ProjectStatus.PUBLISHED, published_at=utcnow())
+    _log_event(project_id, f"Marked as published ({len(posts)} URL(s) recorded)")
+    # Same PUBLISHED -> TRACKING transition _run_publish uses after a real
+    # Upload-Post publish, so run_performance_checks (which only looks at
+    # TRACKING projects) picks up any pasted YouTube URL the same way.
+    _set_status(project_id, ProjectStatus.TRACKING)
+    _materialize_project_storage(project_id)
 
 
 def _run_publish(

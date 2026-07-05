@@ -171,6 +171,27 @@ class UsedFact(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class ProjectClip(SQLModel, table=True):
+    """
+    The lightweight "clip-index bridge" (docs/DECISIONS_V3.md §4): one row
+    per stock clip actually used in the current render, in narrative order.
+    This is deliberately NOT the full scene-based Visual Director model from
+    docs/DESIGN_V2.md (no vision scoring, no timestamps) - it's just enough
+    to make the clips Final Review already downloads addressable and
+    swappable. Rewritten (not appended to) after every render, so it always
+    reflects the current final-video.mp4.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="videoproject.id", index=True)
+    index: int
+    search_term: str = ""
+    provider: str = ""
+    source_url: str = ""
+    local_path: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+
+
 class AgentEvent(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="videoproject.id", index=True)

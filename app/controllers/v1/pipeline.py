@@ -45,6 +45,15 @@ class ApproveProjectRequest(BaseModel):
     thumbnail_path: Optional[str] = None
 
 
+class PlatformUrl(BaseModel):
+    platform: str
+    url: Optional[str] = None
+
+
+class MarkPublishedRequest(BaseModel):
+    platform_urls: List[PlatformUrl] = []
+
+
 @router.post("/projects", summary="Start a new agent-driven video project")
 def create_project(request: Request, body: CreateProjectRequest):
     topic = (body.topic or "").strip()
@@ -137,6 +146,20 @@ def reject_project(request: Request, body: RejectProjectRequest, project_id: int
 def retry_project(request: Request, project_id: int = Path(...)):
     try:
         orchestrator.retry_failed_project(project_id)
+    except ValueError as exc:
+        raise HttpException(task_id="", status_code=404, message=str(exc))
+    except PermissionError as exc:
+        raise HttpException(task_id="", status_code=409, message=str(exc))
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post(
+    "/projects/{project_id}/mark-published",
+    summary="Record that an approved project was posted manually while publishing is frozen",
+)
+def mark_published(request: Request, body: MarkPublishedRequest, project_id: int = Path(...)):
+    try:
+        orchestrator.mark_as_published(project_id, [p.model_dump() for p in body.platform_urls])
     except ValueError as exc:
         raise HttpException(task_id="", status_code=404, message=str(exc))
     except PermissionError as exc:

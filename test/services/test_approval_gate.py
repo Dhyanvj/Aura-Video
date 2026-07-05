@@ -14,9 +14,10 @@ from app.agents import orchestrator
 from app.config import config
 from app.db import session_scope
 from app.db.models import ProjectStatus, VideoProject
+from test.services._test_helpers import IsolatedStorageDirMixin
 
 
-class TestApprovalGateEnforcement(unittest.TestCase):
+class TestApprovalGateEnforcement(IsolatedStorageDirMixin, unittest.TestCase):
     """
     The hard rule: nothing is ever published without a human approving a
     project that is actually awaiting approval. approve_and_publish() must
@@ -29,9 +30,11 @@ class TestApprovalGateEnforcement(unittest.TestCase):
         self._original_engine = db_session.engine
         db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
         db_session.init_db()
+        self._start_isolated_storage_dir()
 
     def tearDown(self):
         db_session.engine = self._original_engine
+        self._stop_isolated_storage_dir()
         # Not deleted: a still-running daemon thread from this test can
         # otherwise reconnect after deletion and silently recreate an
         # empty, tableless file at the same path, corrupting the next test.
@@ -103,9 +106,11 @@ class TestApprovalGateEnforcement(unittest.TestCase):
         self.assertIsNotNone(project.published_at)
 
     def test_publish_skipped_when_publishing_disabled(self):
-        # The default state: publishing is paused for the v2 quality redesign.
-        # Approving marks the project complete without ever reaching
-        # Publisher.publish() or the Upload-Post API.
+        # The default state: publishing is paused. Approving stops at
+        # APPROVED (docs/DECISIONS_V3.md §4) - assets stay put and the
+        # project surfaces in an "Approved / Ready to publish" queue -
+        # without ever reaching Publisher.publish() or the Upload-Post API.
+        # It no longer auto-archives; only mark_as_published() does that now.
         project_id = self._create_project(
             ProjectStatus.AWAITING_HUMAN_APPROVAL,
             video_path="/tmp/some-video.mp4",
@@ -119,11 +124,74 @@ class TestApprovalGateEnforcement(unittest.TestCase):
 
         with session_scope() as session:
             project = session.get(VideoProject, project_id)
-        self.assertEqual(project.status, ProjectStatus.ARCHIVED.value)
+        self.assertEqual(project.status, ProjectStatus.APPROVED.value)
         self.assertIsNone(project.published_at)
 
 
-class TestApproveEndpointPlatformValidation(unittest.TestCase):
+class TestMarkAsPublished(IsolatedStorageDirMixin, unittest.TestCase):
+    """
+    docs/DECISIONS_V3.md §4: while publishing_enabled=false, "Publish" means
+    a human posts the video manually and then records it here.
+    """
+
+    def setUp(self):
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+        self._start_isolated_storage_dir()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        self._stop_isolated_storage_dir()
+        # Not deleted: see docs/REVIEW_FINDINGS.md.
+
+    def _create_project(self, status: ProjectStatus, **fields) -> int:
+        with session_scope() as session:
+            project = VideoProject(status=status.value, **fields)
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            return project.id
+
+    def test_mark_as_published_requires_approved_status(self):
+        project_id = self._create_project(ProjectStatus.AWAITING_HUMAN_APPROVAL)
+        with self.assertRaises(PermissionError):
+            orchestrator.mark_as_published(project_id, [])
+
+    def test_mark_as_published_records_urls_and_moves_to_tracking(self):
+        project_id = self._create_project(ProjectStatus.APPROVED, video_path="/tmp/v.mp4")
+        orchestrator.mark_as_published(
+            project_id, [{"platform": "youtube", "url": "https://youtube.com/watch?v=abc123"}]
+        )
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        # TRACKING (not left at PUBLISHED) so run_performance_checks - which
+        # only looks at TRACKING projects - can pick up the pasted URL.
+        self.assertEqual(project.status, ProjectStatus.TRACKING.value)
+        self.assertIsNotNone(project.published_at)
+        self.assertEqual(len(project.published_posts), 1)
+        self.assertEqual(project.published_posts[0]["platform"], "youtube")
+        self.assertEqual(project.published_posts[0]["source"], "manual")
+
+    def test_mark_as_published_allows_no_urls(self):
+        # A human might publish somewhere with no meaningful stats URL to paste.
+        project_id = self._create_project(ProjectStatus.APPROVED, video_path="/tmp/v.mp4")
+        orchestrator.mark_as_published(project_id, [])
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        self.assertEqual(project.status, ProjectStatus.TRACKING.value)
+        self.assertEqual(project.published_posts, [])
+
+    def test_mark_as_published_unknown_project_raises(self):
+        with self.assertRaises(ValueError):
+            orchestrator.mark_as_published(999999, [])
+
+
+class TestApproveEndpointPlatformValidation(IsolatedStorageDirMixin, unittest.TestCase):
     """
     The /approve endpoint only requires platforms when publishing is actually
     enabled - with it paused, approving with no platforms is the normal path
@@ -136,6 +204,7 @@ class TestApproveEndpointPlatformValidation(unittest.TestCase):
         self._original_engine = db_session.engine
         db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
         db_session.init_db()
+        self._start_isolated_storage_dir()
 
         from fastapi.testclient import TestClient
 
@@ -144,6 +213,7 @@ class TestApproveEndpointPlatformValidation(unittest.TestCase):
         self.client = TestClient(app)
 
     def tearDown(self):
+        self._stop_isolated_storage_dir()
         db_session.engine = self._original_engine
         # Not deleted: a still-running daemon thread from this test can
         # otherwise reconnect after deletion and silently recreate an

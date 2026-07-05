@@ -18,6 +18,7 @@ from app.agents.trend_scout import TrendScout
 from app.db import session_scope
 from app.db.models import ProjectStatus, TopicEmbedding, VideoProject
 from app.services import originality
+from test.services._test_helpers import IsolatedStorageDirMixin
 
 
 def _fake_brief() -> CreativeBrief:
@@ -32,7 +33,7 @@ def _fake_brief() -> CreativeBrief:
     )
 
 
-class TestOriginalityGate(unittest.TestCase):
+class TestOriginalityGate(IsolatedStorageDirMixin, unittest.TestCase):
     """
     Wires app/services/originality.py into the orchestrator's pipeline
     (docs/DECISIONS_V3.md §2): a rejected topic must never reach scripting,
@@ -46,10 +47,12 @@ class TestOriginalityGate(unittest.TestCase):
         self._original_engine = db_session.engine
         db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
         db_session.init_db()
+        self._start_isolated_storage_dir()
 
     def tearDown(self):
         db_session.engine = self._original_engine
         # Not deleted: see docs/REVIEW_FINDINGS.md.
+        self._stop_isolated_storage_dir()
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:

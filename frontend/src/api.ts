@@ -231,6 +231,11 @@ export const api = {
     }),
   retryProject: (id: number) =>
     apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/retry`, { method: "POST" }),
+  markPublished: (id: number, platformUrls: { platform: string; url?: string }[]) =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/mark-published`, {
+      method: "POST",
+      body: JSON.stringify({ platform_urls: platformUrls }),
+    }),
   getSettings: () => apiFetch<Settings>("/api/v1/settings"),
   updateSettings: (partial: Partial<Settings>) =>
     apiFetch<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(partial) }),

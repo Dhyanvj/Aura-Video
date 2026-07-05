@@ -178,6 +178,76 @@ class TestMaterialTlsVerification(unittest.TestCase):
         )
         self.assertEqual(result, ["/tmp/a1.mp4", "/tmp/b1.mp4", "/tmp/a2.mp4"])
 
+    def test_download_videos_metadata_out_records_search_term_per_clip(self):
+        # docs/DECISIONS_V3.md §4 clip-index bridge: metadata_out must carry
+        # the originating search_term for each clip, in the same order as
+        # the returned path list, so Producer can hand it to Orchestrator to
+        # build a storyboard - purely additive, existing callers (this test's
+        # own sibling above) get identical behavior when they don't pass it.
+        search_results = {
+            "opening city": [material.MaterialInfo(provider="pexels", url="https://v.example/a1.mp4", duration=3)],
+            "middle office": [material.MaterialInfo(provider="pixabay", url="https://v.example/b1.mp4", duration=3)],
+        }
+
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return search_results[search_term]
+
+        def fake_save_video(video_url, save_dir=""):
+            return f"/tmp/{video_url.rsplit('/', 1)[-1]}"
+
+        metadata_out = []
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=lambda **kw: search_results.get(kw["search_term"], [])),
+            patch.object(material, "search_videos_pixabay", side_effect=lambda **kw: search_results.get(kw["search_term"], [])),
+            patch.object(material, "save_video", side_effect=fake_save_video),
+        ):
+            result = material.download_videos(
+                task_id="ordered-materials-metadata",
+                search_terms=["opening city", "middle office"],
+                source="pexels",
+                audio_duration=7,
+                max_clip_duration=3,
+                match_script_order=True,
+                metadata_out=metadata_out,
+            )
+
+        self.assertEqual(result, ["/tmp/a1.mp4", "/tmp/b1.mp4"])
+        self.assertEqual(
+            metadata_out,
+            [
+                {"search_term": "opening city", "provider": "pexels", "url": "https://v.example/a1.mp4", "local_path": "/tmp/a1.mp4"},
+                {"search_term": "middle office", "provider": "pixabay", "url": "https://v.example/b1.mp4", "local_path": "/tmp/b1.mp4"},
+            ],
+        )
+
+    def test_download_videos_metadata_out_records_search_term_in_default_mode(self):
+        # Same guarantee in the (less commonly used) non-script-order branch.
+        search_results = {
+            "a topic": [material.MaterialInfo(provider="pexels", url="https://v.example/a1.mp4", duration=10)],
+        }
+
+        def fake_save_video(video_url, save_dir=""):
+            return f"/tmp/{video_url.rsplit('/', 1)[-1]}"
+
+        metadata_out = []
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=lambda **kw: search_results.get(kw["search_term"], [])),
+            patch.object(material, "save_video", side_effect=fake_save_video),
+        ):
+            material.download_videos(
+                task_id="default-mode-metadata",
+                search_terms=["a topic"],
+                source="pexels",
+                audio_duration=5,
+                max_clip_duration=5,
+                match_script_order=False,
+                metadata_out=metadata_out,
+            )
+
+        self.assertEqual(metadata_out, [{"search_term": "a topic", "provider": "pexels", "url": "https://v.example/a1.mp4", "local_path": "/tmp/a1.mp4"}])
+
 
 class TestCoverrProvider(unittest.TestCase):
     """

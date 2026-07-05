@@ -9,7 +9,7 @@ Resources:
 
 from fastapi import APIRouter
 
-from app.controllers.v1 import analytics, content_types, llm, pipeline, series, settings, video, ws
+from app.controllers.v1 import analytics, content_types, llm, pipeline, series, settings, storyboard, video, ws
 
 root_api_router = APIRouter()
 # v1
@@ -20,4 +20,5 @@ root_api_router.include_router(settings.router)
 root_api_router.include_router(analytics.router)
 root_api_router.include_router(content_types.router)
 root_api_router.include_router(series.router)
+root_api_router.include_router(storyboard.router)
 root_api_router.include_router(ws.router)

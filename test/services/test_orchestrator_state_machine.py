@@ -19,6 +19,7 @@ from app.db import session_scope
 from app.db.models import ProjectStatus, VideoProject
 from app.models import const
 from app.services import state as sm
+from test.services._test_helpers import IsolatedStorageDirMixin
 
 
 def _fake_brief() -> CreativeBrief:
@@ -44,13 +45,14 @@ def _fake_render_success(task_id, params, stop_at="video"):
     )
 
 
-class TestOrchestratorStateMachine(unittest.TestCase):
+class TestOrchestratorStateMachine(IsolatedStorageDirMixin, unittest.TestCase):
     def setUp(self):
         fd, self._db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         self._original_engine = db_session.engine
         db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
         db_session.init_db()
+        self._start_isolated_storage_dir()
 
     def tearDown(self):
         db_session.engine = self._original_engine
@@ -62,7 +64,7 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         # corrupting whichever test happens to run next. A few KB leaked
         # into the OS temp dir per test is a fine trade for not having
         # cross-test corruption.
-        pass
+        self._stop_isolated_storage_dir()
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:
@@ -137,6 +139,59 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         self.assertIsNotNone(project.publish_package)
         self.assertEqual(len(project.qa_reports), 1)
         self.assertEqual(project.qa_reports[0]["overall"], "pass")
+
+    def test_reject_with_notes_preserves_prior_render_under_revisions(self):
+        # docs/DECISIONS_V3.md §4: "Reject with notes returns it to editing,
+        # never deletes - prior render goes to revisions/." Exercises this
+        # through the real orchestrator entry point a human uses
+        # (retry_with_revision), not just project_storage directly.
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch("app.agents.producer.task_service.start") as mock_start, patch(
+            "app.agents.base.BaseAgent.call_json_with_content"
+        ) as mock_vision, patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            mock_start.side_effect = self._fake_render_pass
+            from app.agents.schemas import FrameFinding, VisionReview
+
+            mock_vision.return_value = VisionReview(
+                overall="pass", frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")]
+            )
+
+            project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
+            self._wait_for_status(project_id, {ProjectStatus.AWAITING_HUMAN_APPROVAL.value, ProjectStatus.FAILED.value})
+
+            project = self._get_project(project_id)
+            self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+            storage_path = project.storage_path
+            self.assertIsNotNone(storage_path)
+            first_video_path = project.video_path
+
+            orchestrator.retry_with_revision(project_id, "tighten the hook")
+            self._wait_for_status(project_id, {ProjectStatus.AWAITING_HUMAN_APPROVAL.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+        # A fresh task_id per render means a fresh video file - the prior one
+        # must not simply vanish.
+        self.assertNotEqual(project.video_path, first_video_path)
+
+        from app.utils import utils
+
+        abs_dir = os.path.join(utils.storage_dir(), storage_path)
+        revisions_dir = os.path.join(abs_dir, "revisions")
+        self.assertTrue(os.path.isdir(revisions_dir))
+        archived_videos = [
+            os.path.join(root, f)
+            for root, _, files in os.walk(revisions_dir)
+            for f in files
+            if f == "final-video.mp4"
+        ]
+        self.assertEqual(len(archived_videos), 1)
+        # The current (second) render's video is present at the top level, not archived.
+        self.assertTrue(os.path.isfile(os.path.join(abs_dir, "final-video.mp4")))
 
     def test_revision_loop_caps_at_max_revisions_and_escalates(self):
         # A missing rendered file means QA can't extract frames, so it always
@@ -304,7 +359,7 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
 
 
-class TestOrchestratorResearchWiring(unittest.TestCase):
+class TestOrchestratorResearchWiring(IsolatedStorageDirMixin, unittest.TestCase):
     """
     Part 3: content types with research_required must get a real,
     per-content-type-verified topic (from the Researcher, not a generic
@@ -318,8 +373,10 @@ class TestOrchestratorResearchWiring(unittest.TestCase):
         self._original_engine = db_session.engine
         db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
         db_session.init_db()
+        self._start_isolated_storage_dir()
 
     def tearDown(self):
+        self._stop_isolated_storage_dir()
         db_session.engine = self._original_engine
         # Not deleted: orchestrator pipelines run in daemon threads that
         # outlive _wait_for_status returning (a revision loop's final

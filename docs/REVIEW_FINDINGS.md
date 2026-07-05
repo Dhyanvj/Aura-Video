@@ -29,3 +29,21 @@ Anything weak found in architecture, performance, security, or code quality whil
 ### [By design] Legacy task-only renders are out of migration scope
 
 **Not a defect** — recorded here for traceability. `scripts/migrate_storage_v2.py` only migrates `VideoProject` rows (Agent Studio projects). Renders created via the original `POST /videos` API (no `VideoProject` row) are untouched, per docs/DECISIONS_V3.md §1 — they were never part of the Agent Studio and keep serving from `storage/tasks/{task_id}/` via the existing routes indefinitely.
+
+---
+
+## Milestone 3: Approval workflow completion
+
+### [Fixed] Orchestrator tests were writing real project folders into this repo's actual `storage/` directory (medium severity, test-infra only)
+
+**Where:** `test/services/test_orchestrator_state_machine.py` (`TestOrchestratorStateMachine`, `TestOrchestratorResearchWiring`), `test_originality_gate.py` (`TestOriginalityGate`), `test_approval_gate.py` (all three classes).
+
+**What:** These tests swap `db_session.engine` to a temp SQLite file (correct, isolates the DB), but never isolated `utils.storage_dir()` — so any test that reaches a real `project_storage.materialize_project()` call (via the real orchestrator pipeline, `approve_and_publish`, or the new `mark_as_published`) wrote actual `storage/projects/{content-type}/{date}-{slug}-000001/` folders into *this developer's real repo*, not a throwaway location. Since every test's temp DB restarts project IDs at 1, repeated runs kept overwriting/accumulating the same handful of fake folders (`storage/projects/uncategorized/2026-07-05-a-topic-000001/`, etc.) on disk — never committed (`/storage/` is gitignored) but real, silent clutter on the machine running the suite.
+
+**Root cause:** discovered here because Milestone 3 added a second call site (`approve_and_publish`/`mark_as_published`) that also materializes — until then only the render path did, and it was already happening in every Milestone 1/2 orchestrator test without being noticed since nothing was checking `storage/projects/` for pollution.
+
+**Fix:** new `test/services/_test_helpers.py` (`IsolatedStorageDirMixin`) redirects `utils.storage_dir()` to a throwaway `tempfile.mkdtemp()` for the duration of the test, restored in `tearDown`. Applied to every test class that reaches a real `materialize_project()` call. Verified: 2 consecutive full-suite runs left `storage/projects/` untouched (previously recreated every run). The already-polluted folders from before this fix were deleted.
+
+### [Deliberate scope decision] Clip-index bridge is not the DESIGN_V2.md Visual Director
+
+Recorded for traceability, not a defect. `app/services/storyboard.py`'s `ProjectClip` model has no vision score, no timestamps, and no AI-generation escalation — it's the current flat search-terms renderer's clip list made addressable, per the option the user explicitly chose in docs/DECISIONS_V3.md §4. The full vision-scored Visual Director from docs/DESIGN_V2.md remains unbuilt and out of scope for this pass.

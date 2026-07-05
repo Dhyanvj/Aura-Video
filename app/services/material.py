@@ -1,7 +1,7 @@
 import os
 import random
 import threading
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlencode
 
 import requests
@@ -310,7 +310,16 @@ def download_videos(
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
     match_script_order: bool = False,
+    metadata_out: Optional[list] = None,
 ) -> List[str]:
+    """
+    metadata_out, if given, is appended in place with one
+    {"search_term", "provider", "url", "local_path"} dict per successfully
+    downloaded clip, in the same order as the returned path list - this is
+    the only thing the v3 clip-index bridge (docs/DECISIONS_V3.md §4) needs
+    from this function; the return contract for every existing caller is
+    unchanged.
+    """
     search_videos = search_videos_pexels
     if source == "pixabay":
         search_videos = search_videos_pixabay
@@ -332,9 +341,10 @@ def download_videos(
             audio_duration=audio_duration,
             max_clip_duration=max_clip_duration,
             material_directory=material_directory,
+            metadata_out=metadata_out,
         )
 
-    valid_video_items = []
+    valid_video_items = []  # list of (MaterialInfo, originating search_term)
     valid_video_urls = []
     found_duration = 0.0
     for search_term in search_terms:
@@ -347,7 +357,7 @@ def download_videos(
 
         for item in video_items:
             if item.url not in valid_video_urls:
-                valid_video_items.append(item)
+                valid_video_items.append((item, search_term))
                 valid_video_urls.append(item.url)
                 found_duration += item.duration
 
@@ -361,7 +371,7 @@ def download_videos(
         random.shuffle(valid_video_items)
 
     total_duration = 0.0
-    for item in valid_video_items:
+    for item, search_term in valid_video_items:
         try:
             logger.info(f"downloading video: {item.url}")
             saved_video_path = save_video(
@@ -370,6 +380,15 @@ def download_videos(
             if saved_video_path:
                 logger.info(f"video saved: {saved_video_path}")
                 video_paths.append(saved_video_path)
+                if metadata_out is not None:
+                    metadata_out.append(
+                        {
+                            "search_term": search_term,
+                            "provider": item.provider,
+                            "url": item.url,
+                            "local_path": saved_video_path,
+                        }
+                    )
                 seconds = min(max_clip_duration, item.duration)
                 total_duration += seconds
                 if total_duration > audio_duration:
@@ -391,6 +410,7 @@ def _download_videos_by_script_order(
     audio_duration: float,
     max_clip_duration: int,
     material_directory: str,
+    metadata_out: Optional[list] = None,
 ) -> List[str]:
     """
     按脚本文案顺序下载素材。
@@ -451,6 +471,15 @@ def _download_videos_by_script_order(
                 if saved_video_path:
                     logger.info(f"video saved: {saved_video_path}")
                     video_paths.append(saved_video_path)
+                    if metadata_out is not None:
+                        metadata_out.append(
+                            {
+                                "search_term": search_term,
+                                "provider": item.provider,
+                                "url": item.url,
+                                "local_path": saved_video_path,
+                            }
+                        )
                     total_duration += min(max_clip_duration, item.duration)
                     if total_duration > audio_duration:
                         logger.info(

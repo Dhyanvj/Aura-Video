@@ -6,6 +6,7 @@ const ALL_PLATFORMS = ["tiktok", "instagram", "youtube"];
 
 export default function ApprovalQueue() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [readyToPublish, setReadyToPublish] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState("");
   const [selectedThumb, setSelectedThumb] = useState<string | undefined>(undefined);
@@ -13,11 +14,19 @@ export default function ApprovalQueue() {
   const [rejectNotes, setRejectNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [publishUrls, setPublishUrls] = useState<Record<number, { platform: string; url: string }>>({});
 
   const refresh = () => {
     api
       .listProjects()
-      .then((all) => setProjects(all.filter((p) => p.status === "AWAITING_HUMAN_APPROVAL")))
+      .then((all) => {
+        setProjects(all.filter((p) => p.status === "AWAITING_HUMAN_APPROVAL"));
+        // docs/DECISIONS_V3.md §4: Approve stops at APPROVED while publishing
+        // is frozen - this is where a human downloads + posts manually, then
+        // records it via Mark as Published. Full "Approved" queue view
+        // polish (search/filters, dedicated page) lands in v3 Milestone 4.
+        setReadyToPublish(all.filter((p) => p.status === "APPROVED"));
+      })
       .catch((e) => setError(String(e)));
   };
 
@@ -69,11 +78,76 @@ export default function ApprovalQueue() {
     }
   };
 
+  const markPublished = async (projectId: number) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const entry = publishUrls[projectId];
+      const platformUrls = entry?.platform ? [{ platform: entry.platform, url: entry.url || undefined }] : [];
+      await api.markPublished(projectId, platformUrls);
+      refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const readyToPublishSection = readyToPublish.length > 0 && (
+    <div className="mb-6">
+      <h2 className="mb-2 text-lg font-semibold text-slate-100">Ready to Publish ({readyToPublish.length})</h2>
+      <p className="mb-3 text-xs text-slate-400">
+        Publishing is paused - download the video, post it manually, then record it here.
+      </p>
+      <div className="flex flex-col gap-2">
+        {readyToPublish.map((p) => {
+          const entry = publishUrls[p.id] || { platform: "youtube", url: "" };
+          const videoUrl = taskFileUrl(p.task_id, p.video_path);
+          return (
+            <div key={p.id} className="flex flex-wrap items-center gap-2 rounded border border-border bg-panel p-2">
+              <span className="min-w-[10rem] text-sm text-slate-200">{p.topic || `#${p.id}`}</span>
+              {videoUrl && (
+                <a href={videoUrl} download className="text-xs text-accent hover:underline">
+                  Download video
+                </a>
+              )}
+              <select
+                value={entry.platform}
+                onChange={(e) => setPublishUrls((prev) => ({ ...prev, [p.id]: { ...entry, platform: e.target.value } }))}
+                className="rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-200"
+              >
+                {["youtube", "tiktok", "instagram"].map((platform) => (
+                  <option key={platform} value={platform}>
+                    {platform}
+                  </option>
+                ))}
+              </select>
+              <input
+                value={entry.url}
+                onChange={(e) => setPublishUrls((prev) => ({ ...prev, [p.id]: { ...entry, url: e.target.value } }))}
+                placeholder="Live URL (optional)"
+                className="min-w-[12rem] flex-1 rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-100"
+              />
+              <button
+                onClick={() => markPublished(p.id)}
+                disabled={busy}
+                className="rounded bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+              >
+                Mark as Published
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   if (projects.length === 0) {
     return (
       <div>
         <h1 className="mb-4 text-xl font-semibold text-slate-100">Approval Queue</h1>
-        <p className="text-slate-400">Nothing is waiting for approval right now.</p>
+        {readyToPublishSection}
+        {readyToPublish.length === 0 && <p className="text-slate-400">Nothing is waiting for approval right now.</p>}
       </div>
     );
   }
@@ -82,7 +156,9 @@ export default function ApprovalQueue() {
   const pkg = selected?.publish_package;
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
+    <div>
+      {readyToPublishSection}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
       <div className="lg:col-span-1">
         <h1 className="mb-4 text-xl font-semibold text-slate-100">Approval Queue ({projects.length})</h1>
         <div className="flex flex-col gap-2">
@@ -214,6 +290,7 @@ export default function ApprovalQueue() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
