@@ -1,6 +1,6 @@
-# Aura-Video v3 — Running Review Findings
+# Aura-Video v3 — Review Findings
 
-Anything weak found in architecture, performance, security, or code quality while implementing docs/DECISIONS_V3.md. Cheap wins are fixed on sight; structural changes are flagged here for a later pass rather than bundled silently into an unrelated milestone.
+Anything weak found in architecture, performance, security, or code quality while implementing docs/DECISIONS_V3.md. Cheap wins were fixed on sight; structural changes are flagged here for a later pass rather than bundled silently into an unrelated milestone. Ordered by milestone.
 
 ---
 
@@ -30,22 +30,6 @@ Anything weak found in architecture, performance, security, or code quality whil
 
 ---
 
-## Milestone 4: UI v3
-
-### [Deliberate scope decision] Global search/filters wired to Pipeline Board only, not every list view
-
-The brief's §5 says "global search + filters on all list views." Implemented as one reusable `ProjectFilters` component (search text, content type, status, series, date range) and wired it into Pipeline Board, the highest-traffic "all projects" view. Trends/Series/Analytics pages did not get the same filter bar in this pass — they're narrower, already-scoped views (a trends feed, a series list, an analytics table) where the same generic project-filter bar is a weaker fit, and time was prioritized toward Dashboard/mobile/dark-mode instead. Not silently claimed as done everywhere; flagged here as the honest boundary of this pass.
-
-### [Found and fixed during implementation] Mechanical dark/light color sweep introduced duplicate/broken Tailwind classes
-
-**What:** Converting ~10 already-dark-only page files to support both themes was done with a scripted regex sweep (`text-slate-400` → `text-slate-500 dark:text-slate-400`, etc.) rather than hand-editing every occurrence. Two classes of bug came out of that mechanical pass, caught before commit by re-grepping the result rather than trusting the script:
-1. Files I'd already hand-written with correct `dark:` variants (`Nav.tsx`, parts of `ApprovalQueue.tsx`) got double-swept, producing `text-slate-500 dark:text-slate-500 dark:text-slate-400`-style duplication.
-2. Pseudo-class-prefixed tokens (`hover:text-slate-200`) got split incorrectly into an unprefixed light variant + a dark variant that silently lost the `hover:` prefix (`hover:text-slate-800 dark:text-slate-200` — always-on in dark mode instead of hover-only).
-
-**Fix:** a second cleanup pass collapsed the duplicates, and the `hover:`-prefix losses were fixed by hand (only 4 occurrences, all in `Nav.tsx`/`ProjectDetail.tsx`). Verified visually afterward via Playwright screenshots in both themes rather than trusting the diff alone.
-
----
-
 ## Milestone 3: Approval workflow completion
 
 ### [Fixed] Orchestrator tests were writing real project folders into this repo's actual `storage/` directory (medium severity, test-infra only)
@@ -61,6 +45,22 @@ The brief's §5 says "global search + filters on all list views." Implemented as
 ### [Deliberate scope decision] Clip-index bridge is not the DESIGN_V2.md Visual Director
 
 Recorded for traceability, not a defect. `app/services/storyboard.py`'s `ProjectClip` model has no vision score, no timestamps, and no AI-generation escalation — it's the current flat search-terms renderer's clip list made addressable, per the option the user explicitly chose in docs/DECISIONS_V3.md §4. The full vision-scored Visual Director from docs/DESIGN_V2.md remains unbuilt and out of scope for this pass.
+
+---
+
+## Milestone 4: UI v3
+
+### [Deliberate scope decision] Global search/filters wired to Pipeline Board only, not every list view
+
+The brief's §5 says "global search + filters on all list views." Implemented as one reusable `ProjectFilters` component (search text, content type, status, series, date range) and wired it into Pipeline Board, the highest-traffic "all projects" view. Trends/Series/Analytics pages did not get the same filter bar in this pass — they're narrower, already-scoped views (a trends feed, a series list, an analytics table) where the same generic project-filter bar is a weaker fit, and time was prioritized toward Dashboard/mobile/dark-mode instead. Not silently claimed as done everywhere; flagged here as the honest boundary of this pass.
+
+### [Found and fixed during implementation] Mechanical dark/light color sweep introduced duplicate/broken Tailwind classes
+
+**What:** Converting ~10 already-dark-only page files to support both themes was done with a scripted regex sweep (`text-slate-400` → `text-slate-500 dark:text-slate-400`, etc.) rather than hand-editing every occurrence. Two classes of bug came out of that mechanical pass, caught before commit by re-grepping the result rather than trusting the script:
+1. Files I'd already hand-written with correct `dark:` variants (`Nav.tsx`, parts of `ApprovalQueue.tsx`) got double-swept, producing `text-slate-500 dark:text-slate-500 dark:text-slate-400`-style duplication.
+2. Pseudo-class-prefixed tokens (`hover:text-slate-200`) got split incorrectly into an unprefixed light variant + a dark variant that silently lost the `hover:` prefix (`hover:text-slate-800 dark:text-slate-200` — always-on in dark mode instead of hover-only).
+
+**Fix:** a second cleanup pass collapsed the duplicates, and the `hover:`-prefix losses were fixed by hand (only 4 occurrences, all in `Nav.tsx`/`ProjectDetail.tsx`). Verified visually afterward via Playwright screenshots in both themes rather than trusting the diff alone.
 
 ---
 
@@ -99,3 +99,25 @@ docs/DECISIONS_V3.md §6 calls for Budget=Edge/Kokoro, Standard=Azure V2, Cinema
 ### Verified end-to-end (not just unit-tested)
 
 The Pollinations image + ffmpeg Ken Burns pipeline (`app/services/ai_images.py`) was run for real (no mocks) against the actual free Pollinations endpoint and a real ffmpeg encode: produced a valid, correctly-sized (1080x1920) 4-second h264 clip from the prompt "a mantis shrimp underwater close up" in ~7 seconds, visually confirmed via extracted frames. RSS/GDELT/Hacker News/Google Fact Check integrations were verified via mocked unit tests only (each hits a real free public API with no auth complexity to misconfigure, and re-running live external calls on every test run would make the suite network-dependent and flaky) - the graceful-degradation path (network failure -> empty list, never a raised exception) is what's actually exercised by every test, which is the behavior that matters for "never a silent single point of failure."
+
+---
+
+## Milestone 7: Final pass
+
+Closing pass across the full v3 diff (Milestones 1-6): re-swept every new service module (`originality.py`, `playbook.py`, `storyboard.py`, `project_storage.py`, `ai_images.py`, `news_sources.py`, `retrospective.py`) and the new frontend files for bare `except:` blocks, debug prints, and TODO markers - none found; every error path found during earlier milestones was already logged (AgentEvent and/or loguru), never silently swallowed, per the ground rules.
+
+### Verified against the live running app (read-only, no data mutated)
+
+- **Migration dry-run still correct** after all six milestones' schema changes: `scripts/migrate_storage_v2.py` (no `--apply`) correctly lists all 9 real pre-v3 projects with their target folders and found task-dir files - schema-compatible end to end.
+- **Old pre-migration project still opens and streams**: `GET /api/v1/projects/9` on a real, never-migrated project returns its `task_id`-based `video_path` with `storage_path: null` as designed, and its video file streams a `206 Partial Content` response via the untouched legacy route.
+- **Migration itself was not applied** to the real dev database in this pass - it's additive/copy-only and safe to run, but actually applying it to real user data is the kind of action that should be a deliberate choice by the user, not something done silently during a review pass. Left for the user to run (`python scripts/migrate_storage_v2.py --apply`) whenever they're ready.
+
+### Definition-of-done items verified via existing tests rather than a live paid run
+
+Creating real projects through the full pipeline costs real Anthropic API spend per the user's own "low cost" priority - burning that budget solely to re-prove what's already covered by tests would work against the brief's own stated priorities. Specifically:
+- "A new project of each content type lands in a clean storage/projects/... folder containing every listed asset" - covered by `test_project_storage.py`'s `materialize_project()` tests, which do real (non-mocked) file I/O against a temp directory, not a mocked filesystem.
+- "After ~10 projects, a playbook exists per active agent, visible and editable in Settings" - the distillation trigger is unit-tested (`test_playbook.py`), and the populated Settings UI (bullets, toggles, version history, rollback) was verified visually against real seeded data via Playwright screenshots on an isolated temp-DB instance (not the live app), confirming the full UI works end-to-end once real lessons accumulate.
+
+### Suite health
+
+440 tests, green across 3 consecutive full-suite runs with `storage/projects/` confirmed untouched after each (the Milestone 3 test-isolation fix holds). Frontend typechecks and builds cleanly.

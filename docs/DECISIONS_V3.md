@@ -1,6 +1,6 @@
 # Aura-Video v3 — Decision Memo
 
-Status: **APPROVED** (2026-07-05). §4's open question resolved: option 1 (lightweight clip-index bridge), confirmed by user. Rest of the memo approved as written. This is the memo required by the v3 brief (§0.1): storage layout, dedupe approach, learning-loop design, and provider picks with a cost table. Short by design — the full write-up for each area happens in code + tests, not here.
+Status: **APPROVED** (2026-07-05), **all 7 milestones implemented and committed** (2026-07-06). §4's open question resolved: option 1 (lightweight clip-index bridge), confirmed by user. Rest of the memo approved as written. This is the memo required by the v3 brief (§0.1): storage layout, dedupe approach, learning-loop design, and provider picks with a cost table. Short by design — the full write-up for each area happens in code + tests, not here. See docs/REVIEW_FINDINGS.md for every deliberate scope decision and bug caught during implementation.
 
 ---
 
