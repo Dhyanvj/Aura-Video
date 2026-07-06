@@ -98,10 +98,10 @@ export default function NewVideo() {
 
   return (
     <div>
-      <h1 className="mb-1 text-xl font-semibold text-slate-100">New Video</h1>
-      <p className="mb-6 text-sm text-slate-400">Pick a content type, then fill in the details.</p>
+      <h1 className="mb-1 text-xl font-semibold text-slate-900 dark:text-slate-100">New Video</h1>
+      <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">Pick a content type, then fill in the details.</p>
 
-      {error && <div className="mb-4 rounded bg-rose-950/50 p-3 text-sm text-rose-300">{error}</div>}
+      {error && <div className="mb-4 rounded bg-rose-100 dark:bg-rose-950/50 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
 
       <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
         {contentTypes.map((t) => (
@@ -112,9 +112,9 @@ export default function NewVideo() {
               selectedType?.id === t.id ? "border-accent bg-panel2" : "border-border bg-panel hover:border-accent"
             }`}
           >
-            <div className="mb-1 text-sm font-semibold text-slate-100">{t.label}</div>
-            {t.description && <p className="mb-1 text-xs text-slate-400">{t.description}</p>}
-            <div className="text-xs text-slate-500">
+            <div className="mb-1 text-sm font-semibold text-slate-900 dark:text-slate-100">{t.label}</div>
+            {t.description && <p className="mb-1 text-xs text-slate-500 dark:text-slate-400">{t.description}</p>}
+            <div className="text-xs text-slate-500 dark:text-slate-500">
               ~{t.default_duration_s}s &middot; {t.default_quality_preset}
             </div>
             <div className="mt-2 flex flex-wrap gap-1">
@@ -124,49 +124,49 @@ export default function NewVideo() {
                 </span>
               )}
               {t.series_capable && (
-                <span className="inline-block rounded bg-indigo-950/50 px-1.5 py-0.5 text-[10px] text-indigo-300">
+                <span className="inline-block rounded bg-indigo-100 dark:bg-indigo-950/50 px-1.5 py-0.5 text-[10px] text-indigo-700 dark:text-indigo-300">
                   series-capable
                 </span>
               )}
             </div>
           </button>
         ))}
-        {contentTypes.length === 0 && !error && <div className="text-sm text-slate-500">Loading content types...</div>}
+        {contentTypes.length === 0 && !error && <div className="text-sm text-slate-500 dark:text-slate-500">Loading content types...</div>}
       </div>
 
       {selectedType && (
         <div className="max-w-2xl rounded-lg border border-border bg-panel p-4">
-          <h2 className="mb-3 text-sm font-semibold text-slate-200">{selectedType.label} options</h2>
+          <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">{selectedType.label} options</h2>
 
-          <label className="mb-1 block text-xs text-slate-400">Topic (leave empty for auto-trend)</label>
+          <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Topic (leave empty for auto-trend)</label>
           <input
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            className="mb-3 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+            className="mb-3 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
           />
           <div className="mb-3 grid grid-cols-2 gap-3">
             <div>
-              <label className="mb-1 block text-xs text-slate-400">Niche</label>
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Niche</label>
               <input
                 value={niche}
                 onChange={(e) => setNiche(e.target.value)}
-                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs text-slate-400">Audience (auto-trend only)</label>
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Audience (auto-trend only)</label>
               <input
                 value={audience}
                 onChange={(e) => setAudience(e.target.value)}
-                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
               />
             </div>
           </div>
 
           {selectedType.series_capable && (
             <div className="mb-3">
-              <label className="mb-1 block text-xs text-slate-400">Series</label>
-              <div className="flex flex-wrap gap-4 text-sm text-slate-200">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Series</label>
+              <div className="flex flex-wrap gap-4 text-sm text-slate-800 dark:text-slate-200">
                 {(["none", "new", "continue"] as const).map((mode) => (
                   <label key={mode} className="flex items-center gap-2">
                     <input
@@ -184,14 +184,14 @@ export default function NewVideo() {
                   value={seriesTitle}
                   onChange={(e) => setSeriesTitle(e.target.value)}
                   placeholder="Series title"
-                  className="mt-2 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                  className="mt-2 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-500 dark:text-slate-500"
                 />
               )}
               {seriesMode === "continue" && (
                 <select
                   value={seriesId}
                   onChange={(e) => setSeriesId(e.target.value ? Number(e.target.value) : "")}
-                  className="mt-2 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+                  className="mt-2 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
                 >
                   <option value="">Select a series...</option>
                   {eligibleSeries.map((s) => (
@@ -204,8 +204,8 @@ export default function NewVideo() {
             </div>
           )}
 
-          <label className="mb-1 block text-xs text-slate-400">Quality preset</label>
-          <div className="mb-1 flex gap-4 text-sm text-slate-200">
+          <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Quality preset</label>
+          <div className="mb-1 flex gap-4 text-sm text-slate-800 dark:text-slate-200">
             {(["budget", "standard", "cinematic"] as const).map((preset) => (
               <label key={preset} className="flex items-center gap-2">
                 <input
@@ -218,8 +218,8 @@ export default function NewVideo() {
               </label>
             ))}
           </div>
-          <p className="mb-4 text-xs text-slate-500">
-            Estimated cost per video: <span className="text-slate-300">{costEstimate}</span> (illustrative estimate,
+          <p className="mb-4 text-xs text-slate-500 dark:text-slate-500">
+            Estimated cost per video: <span className="text-slate-600 dark:text-slate-300">{costEstimate}</span> (illustrative estimate,
             see docs/DESIGN_V2.md)
           </p>
 

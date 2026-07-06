@@ -2,6 +2,22 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-canvas: #f4f5f7;
+  --color-panel: #ffffff;
+  --color-panel2: #eef0f4;
+  --color-border: #d8dce3;
+  --color-accent: #4f46e5;
+}
+
+.dark {
+  --color-canvas: #0b0d12;
+  --color-panel: #12151c;
+  --color-panel2: #181c26;
+  --color-border: #242a36;
+  --color-accent: #6366f1;
+}
+
 body {
   min-height: 100vh;
 }

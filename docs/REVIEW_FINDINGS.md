@@ -18,17 +18,31 @@ Anything weak found in architecture, performance, security, or code quality whil
 
 **Deferred:** the actual fix (giving orchestrator's fire-and-forget pipeline threads a handle tests can `join()`) would be the more correct long-term solution, but touches production orchestration code for a test-only problem — out of scope for this pass.
 
-### [Found, not fixed] `ProjectDetail.tsx` video player isn't aspect-ratio aware
+### [Fixed in Milestone 4] `ProjectDetail.tsx` video player wasn't aspect-ratio aware
 
-**Where:** `frontend/src/pages/ProjectDetail.tsx` — the `<video>` element uses a fixed `max-h-[480px]`.
+**Where:** `frontend/src/pages/ProjectDetail.tsx` — the `<video>` element used a fixed `max-h-[480px]` with no aspect ratio, so it didn't scale correctly at narrow (mobile) widths.
 
-**Severity:** low (cosmetic/UX, not correctness or security).
-
-**Deferred to:** v3 Milestone 4 (UI v3), which already covers Final Review/mobile responsiveness. Noted here per the running-findings requirement so it doesn't get lost.
+**Fix:** `aspect-[9/16]` (these are all vertical shorts) + `w-full max-w-xs`, verified visually at both desktop and 390px mobile width via a Playwright screenshot pass against the running app.
 
 ### [By design] Legacy task-only renders are out of migration scope
 
 **Not a defect** — recorded here for traceability. `scripts/migrate_storage_v2.py` only migrates `VideoProject` rows (Agent Studio projects). Renders created via the original `POST /videos` API (no `VideoProject` row) are untouched, per docs/DECISIONS_V3.md §1 — they were never part of the Agent Studio and keep serving from `storage/tasks/{task_id}/` via the existing routes indefinitely.
+
+---
+
+## Milestone 4: UI v3
+
+### [Deliberate scope decision] Global search/filters wired to Pipeline Board only, not every list view
+
+The brief's §5 says "global search + filters on all list views." Implemented as one reusable `ProjectFilters` component (search text, content type, status, series, date range) and wired it into Pipeline Board, the highest-traffic "all projects" view. Trends/Series/Analytics pages did not get the same filter bar in this pass — they're narrower, already-scoped views (a trends feed, a series list, an analytics table) where the same generic project-filter bar is a weaker fit, and time was prioritized toward Dashboard/mobile/dark-mode instead. Not silently claimed as done everywhere; flagged here as the honest boundary of this pass.
+
+### [Found and fixed during implementation] Mechanical dark/light color sweep introduced duplicate/broken Tailwind classes
+
+**What:** Converting ~10 already-dark-only page files to support both themes was done with a scripted regex sweep (`text-slate-400` → `text-slate-500 dark:text-slate-400`, etc.) rather than hand-editing every occurrence. Two classes of bug came out of that mechanical pass, caught before commit by re-grepping the result rather than trusting the script:
+1. Files I'd already hand-written with correct `dark:` variants (`Nav.tsx`, parts of `ApprovalQueue.tsx`) got double-swept, producing `text-slate-500 dark:text-slate-500 dark:text-slate-400`-style duplication.
+2. Pseudo-class-prefixed tokens (`hover:text-slate-200`) got split incorrectly into an unprefixed light variant + a dark variant that silently lost the `hover:` prefix (`hover:text-slate-800 dark:text-slate-200` — always-on in dark mode instead of hover-only).
+
+**Fix:** a second cleanup pass collapsed the duplicates, and the `hover:`-prefix losses were fixed by hand (only 4 occurrences, all in `Nav.tsx`/`ProjectDetail.tsx`). Verified visually afterward via Playwright screenshots in both themes rather than trusting the diff alone.
 
 ---
 

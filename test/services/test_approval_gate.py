@@ -245,5 +245,77 @@ class TestApproveEndpointPlatformValidation(IsolatedStorageDirMixin, unittest.Te
         self.assertEqual(response.status_code, 400)
 
 
+class TestMetadataAutosaveEndpoint(IsolatedStorageDirMixin, unittest.TestCase):
+    """
+    v3 Milestone 4 (docs/DECISIONS_V3.md §5, reduced clicks): Final Review
+    autosaves title/description edits instead of requiring an explicit save
+    step before Approve.
+    """
+
+    def setUp(self):
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+        self._start_isolated_storage_dir()
+
+        from fastapi.testclient import TestClient
+
+        from app.asgi import app
+
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        self._stop_isolated_storage_dir()
+        db_session.engine = self._original_engine
+
+    def _create_project(self, publish_package=None) -> int:
+        with session_scope() as session:
+            project = VideoProject(
+                status=ProjectStatus.AWAITING_HUMAN_APPROVAL.value,
+                publish_package=publish_package,
+            )
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            return project.id
+
+    def test_updates_title_without_touching_other_package_fields(self):
+        project_id = self._create_project(
+            publish_package={"title_options": ["Old Title"], "description": "kept", "tags": ["a"]}
+        )
+        response = self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "New Title"})
+        self.assertEqual(response.status_code, 200)
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        self.assertEqual(project.publish_package["title_options"][0], "New Title")
+        self.assertEqual(project.publish_package["description"], "kept")
+        self.assertEqual(project.publish_package["tags"], ["a"])
+
+    def test_updates_description(self):
+        project_id = self._create_project(publish_package={"title_options": ["T"], "description": "old"})
+        response = self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"description": "new desc"})
+        self.assertEqual(response.status_code, 200)
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        self.assertEqual(project.publish_package["description"], "new desc")
+
+    def test_handles_missing_publish_package(self):
+        project_id = self._create_project(publish_package=None)
+        response = self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "First Title"})
+        self.assertEqual(response.status_code, 200)
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        self.assertEqual(project.publish_package["title_options"][0], "First Title")
+
+    def test_unknown_project_returns_404(self):
+        response = self.client.patch("/api/v1/projects/999999/metadata", json={"title": "x"})
+        self.assertEqual(response.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

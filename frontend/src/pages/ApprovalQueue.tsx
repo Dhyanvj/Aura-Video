@@ -1,20 +1,24 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api, Project, taskFileUrl } from "../api";
 import { useLiveUpdates } from "../ws";
 
 const ALL_PLATFORMS = ["tiktok", "instagram", "youtube"];
+const AUTOSAVE_DEBOUNCE_MS = 800;
 
 export default function ApprovalQueue() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [readyToPublish, setReadyToPublish] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState("");
+  const [selectedDescription, setSelectedDescription] = useState("");
   const [selectedThumb, setSelectedThumb] = useState<string | undefined>(undefined);
   const [platforms, setPlatforms] = useState<string[]>(["tiktok", "instagram"]);
   const [rejectNotes, setRejectNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle");
   const [publishUrls, setPublishUrls] = useState<Record<number, { platform: string; url: string }>>({});
+  const rejectNotesRef = useRef<HTMLTextAreaElement>(null);
 
   const refresh = () => {
     api
@@ -41,9 +45,33 @@ export default function ApprovalQueue() {
   useEffect(() => {
     if (selected?.publish_package) {
       setSelectedTitle(selected.publish_package.title_options[0] || selected.topic || "");
+      setSelectedDescription(selected.publish_package.description || "");
       setSelectedThumb(selected.publish_package.thumbnail_candidates?.[0]);
     }
+    setSaveStatus("idle");
   }, [selected?.id]);
+
+  // Autosave (docs/DECISIONS_V3.md §5, reduced clicks): debounced so typing
+  // doesn't fire a request per keystroke, and skipped on the render right
+  // after switching projects (the effect above already reset these fields
+  // to the server's own values, so there's nothing to save there).
+  useEffect(() => {
+    if (!selected) return;
+    const packageTitle = selected.publish_package?.title_options[0] ?? "";
+    const packageDescription = selected.publish_package?.description ?? "";
+    if (selectedTitle === packageTitle && selectedDescription === packageDescription) return;
+
+    setSaveStatus("saving");
+    const projectId = selected.id;
+    const timer = setTimeout(() => {
+      api
+        .updateProjectMetadata(projectId, { title: selectedTitle, description: selectedDescription })
+        .then(() => setSaveStatus("saved"))
+        .catch(() => setSaveStatus("idle"));
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTitle, selectedDescription]);
 
   const togglePlatform = (platform: string) => {
     setPlatforms((prev) => (prev.includes(platform) ? prev.filter((p) => p !== platform) : [...prev, platform]));
@@ -78,6 +106,29 @@ export default function ApprovalQueue() {
     }
   };
 
+  // Keyboard shortcuts on Final Review (docs/DECISIONS_V3.md §5): a=approve,
+  // r=jump to the request-changes notes field. Ignored while typing in a
+  // text field/textarea/select so normal typing (e.g. the title input, or
+  // writing the notes themselves) never triggers a shortcut mid-sentence.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping = target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+      if (isTyping || e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "a" && selected && !busy) {
+        e.preventDefault();
+        approve();
+      } else if (e.key === "r") {
+        e.preventDefault();
+        rejectNotesRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, busy, platforms, selectedThumb]);
+
   const markPublished = async (projectId: number) => {
     setBusy(true);
     setError(null);
@@ -95,8 +146,8 @@ export default function ApprovalQueue() {
 
   const readyToPublishSection = readyToPublish.length > 0 && (
     <div className="mb-6">
-      <h2 className="mb-2 text-lg font-semibold text-slate-100">Ready to Publish ({readyToPublish.length})</h2>
-      <p className="mb-3 text-xs text-slate-400">
+      <h2 className="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-100">Ready to Publish ({readyToPublish.length})</h2>
+      <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
         Publishing is paused - download the video, post it manually, then record it here.
       </p>
       <div className="flex flex-col gap-2">
@@ -105,7 +156,7 @@ export default function ApprovalQueue() {
           const videoUrl = taskFileUrl(p.task_id, p.video_path);
           return (
             <div key={p.id} className="flex flex-wrap items-center gap-2 rounded border border-border bg-panel p-2">
-              <span className="min-w-[10rem] text-sm text-slate-200">{p.topic || `#${p.id}`}</span>
+              <span className="min-w-[10rem] text-sm text-slate-800 dark:text-slate-200">{p.topic || `#${p.id}`}</span>
               {videoUrl && (
                 <a href={videoUrl} download className="text-xs text-accent hover:underline">
                   Download video
@@ -114,7 +165,7 @@ export default function ApprovalQueue() {
               <select
                 value={entry.platform}
                 onChange={(e) => setPublishUrls((prev) => ({ ...prev, [p.id]: { ...entry, platform: e.target.value } }))}
-                className="rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-200"
+                className="rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-800 dark:text-slate-200"
               >
                 {["youtube", "tiktok", "instagram"].map((platform) => (
                   <option key={platform} value={platform}>
@@ -126,7 +177,7 @@ export default function ApprovalQueue() {
                 value={entry.url}
                 onChange={(e) => setPublishUrls((prev) => ({ ...prev, [p.id]: { ...entry, url: e.target.value } }))}
                 placeholder="Live URL (optional)"
-                className="min-w-[12rem] flex-1 rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-100"
+                className="min-w-[12rem] flex-1 rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-900 dark:text-slate-100"
               />
               <button
                 onClick={() => markPublished(p.id)}
@@ -145,9 +196,9 @@ export default function ApprovalQueue() {
   if (projects.length === 0) {
     return (
       <div>
-        <h1 className="mb-4 text-xl font-semibold text-slate-100">Approval Queue</h1>
+        <h1 className="mb-4 text-xl font-semibold text-slate-900 dark:text-slate-100">Approval Queue</h1>
         {readyToPublishSection}
-        {readyToPublish.length === 0 && <p className="text-slate-400">Nothing is waiting for approval right now.</p>}
+        {readyToPublish.length === 0 && <p className="text-slate-500 dark:text-slate-400">Nothing is waiting for approval right now.</p>}
       </div>
     );
   }
@@ -160,7 +211,7 @@ export default function ApprovalQueue() {
       {readyToPublishSection}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
       <div className="lg:col-span-1">
-        <h1 className="mb-4 text-xl font-semibold text-slate-100">Approval Queue ({projects.length})</h1>
+        <h1 className="mb-4 text-xl font-semibold text-slate-900 dark:text-slate-100">Approval Queue ({projects.length})</h1>
         <div className="flex flex-col gap-2">
           {projects.map((p) => (
             <button
@@ -169,7 +220,7 @@ export default function ApprovalQueue() {
               className={`rounded border p-2 text-left text-sm ${
                 selected?.id === p.id
                   ? "border-accent bg-panel2 text-white"
-                  : "border-border bg-panel text-slate-300 hover:border-accent"
+                  : "border-border bg-panel text-slate-600 dark:text-slate-300 hover:border-accent"
               }`}
             >
               {p.topic || `#${p.id}`}
@@ -187,14 +238,25 @@ export default function ApprovalQueue() {
           </div>
 
           <div className="flex flex-col gap-4">
-            {error && <div className="rounded bg-rose-950/50 p-3 text-sm text-rose-300">{error}</div>}
+            {error && <div className="rounded bg-rose-100 dark:bg-rose-950/50 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+
+            <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-500">
+              <span>
+                Shortcuts: <kbd className="rounded bg-panel2 px-1">a</kbd> approve &middot;{" "}
+                <kbd className="rounded bg-panel2 px-1">r</kbd> request changes
+              </span>
+              <span>
+                {saveStatus === "saving" && "Saving..."}
+                {saveStatus === "saved" && "Saved"}
+              </span>
+            </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-400">Title</label>
+              <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Title</label>
               <input
                 value={selectedTitle}
                 onChange={(e) => setSelectedTitle(e.target.value)}
-                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
               />
               {pkg && pkg.title_options.length > 1 && (
                 <div className="mt-1 flex flex-wrap gap-1">
@@ -202,7 +264,7 @@ export default function ApprovalQueue() {
                     <button
                       key={i}
                       onClick={() => setSelectedTitle(t)}
-                      className="rounded bg-panel2 px-2 py-0.5 text-xs text-slate-400 hover:text-white"
+                      className="rounded bg-panel2 px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400 hover:text-white"
                     >
                       Use option {i + 1}
                     </button>
@@ -213,11 +275,16 @@ export default function ApprovalQueue() {
 
             {pkg && (
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-400">Description & tags</label>
-                <p className="rounded border border-border bg-panel2 p-2 text-xs text-slate-300">{pkg.description}</p>
+                <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Description & tags</label>
+                <textarea
+                  value={selectedDescription}
+                  onChange={(e) => setSelectedDescription(e.target.value)}
+                  rows={4}
+                  className="w-full rounded border border-border bg-panel2 p-2 text-xs text-slate-600 dark:text-slate-300"
+                />
                 <div className="mt-1 flex flex-wrap gap-1">
                   {pkg.tags.map((tag, i) => (
-                    <span key={i} className="rounded bg-panel2 px-2 py-0.5 text-xs text-slate-400">
+                    <span key={i} className="rounded bg-panel2 px-2 py-0.5 text-xs text-slate-500 dark:text-slate-400">
                       #{tag}
                     </span>
                   ))}
@@ -227,7 +294,7 @@ export default function ApprovalQueue() {
 
             {pkg && pkg.thumbnail_candidates?.length > 0 && (
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-400">Thumbnail</label>
+                <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Thumbnail</label>
                 <div className="flex gap-2">
                   {pkg.thumbnail_candidates.map((path, i) => {
                     const url = taskFileUrl(selected.task_id, path);
@@ -247,10 +314,10 @@ export default function ApprovalQueue() {
             )}
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-400">Platforms</label>
+              <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Platforms</label>
               <div className="flex gap-3">
                 {ALL_PLATFORMS.map((platform) => (
-                  <label key={platform} className="flex items-center gap-1.5 text-sm text-slate-200">
+                  <label key={platform} className="flex items-center gap-1.5 text-sm text-slate-800 dark:text-slate-200">
                     <input
                       type="checkbox"
                       checked={platforms.includes(platform)}
@@ -271,12 +338,13 @@ export default function ApprovalQueue() {
             </button>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-400">Request changes (notes)</label>
+              <label className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">Request changes (notes)</label>
               <textarea
+                ref={rejectNotesRef}
                 value={rejectNotes}
                 onChange={(e) => setRejectNotes(e.target.value)}
                 rows={3}
-                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100"
+                className="w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
                 placeholder="What should the Creative Director fix?"
               />
               <button

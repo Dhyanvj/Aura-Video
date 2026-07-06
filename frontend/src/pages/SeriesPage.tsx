@@ -28,15 +28,15 @@ export default function SeriesPage() {
 
   return (
     <div>
-      <h1 className="mb-1 text-xl font-semibold text-slate-100">Series</h1>
-      <p className="mb-6 text-sm text-slate-400">
+      <h1 className="mb-1 text-xl font-semibold text-slate-900 dark:text-slate-100">Series</h1>
+      <p className="mb-6 text-sm text-slate-500 dark:text-slate-400">
         Recurring characters, voice, and style locked across episodes via each series' Bible.
       </p>
 
-      {error && <div className="mb-4 rounded bg-rose-950/50 p-3 text-sm text-rose-300">{error}</div>}
+      {error && <div className="mb-4 rounded bg-rose-100 dark:bg-rose-950/50 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
 
       {seriesList.length === 0 && !error && (
-        <p className="text-slate-400">
+        <p className="text-slate-500 dark:text-slate-400">
           No series yet. Start one from the New Video flow by choosing "Start a new series" for a series-capable
           content type.
         </p>
@@ -47,8 +47,8 @@ export default function SeriesPage() {
           <div key={s.id} className="rounded-lg border border-border bg-panel p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h2 className="text-sm font-semibold text-slate-100">{s.title}</h2>
-                <p className="text-xs text-slate-400">
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">{s.title}</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
                   {s.content_type_id} &middot; {s.episode_count} episode{s.episode_count === 1 ? "" : "s"} &middot;
                   voice: {s.voice_id || "not locked yet"}
                 </p>
@@ -56,7 +56,7 @@ export default function SeriesPage() {
               <div className="flex gap-2">
                 <button
                   onClick={() => toggleExpand(s.id)}
-                  className="rounded border border-border bg-panel2 px-3 py-1 text-xs text-slate-300 hover:border-accent"
+                  className="rounded border border-border bg-panel2 px-3 py-1 text-xs text-slate-600 dark:text-slate-300 hover:border-accent"
                 >
                   {expanded === s.id ? "Hide episodes" : "Show episodes"}
                 </button>
@@ -70,7 +70,7 @@ export default function SeriesPage() {
             </div>
 
             {s.rolling_summary && (
-              <p className="mb-2 whitespace-pre-wrap rounded bg-panel2 p-2 text-xs text-slate-400">
+              <p className="mb-2 whitespace-pre-wrap rounded bg-panel2 p-2 text-xs text-slate-500 dark:text-slate-400">
                 {s.rolling_summary}
               </p>
             )}
@@ -81,12 +81,12 @@ export default function SeriesPage() {
                   <Link
                     key={ep.id}
                     to={`/projects/${ep.id}`}
-                    className="flex items-center justify-between rounded border border-border bg-panel2 px-3 py-1.5 text-xs text-slate-300 hover:border-accent"
+                    className="flex items-center justify-between rounded border border-border bg-panel2 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-300 hover:border-accent"
                   >
                     <span>
                       Episode {ep.episode_number}: {ep.topic || "(topic pending)"}
                     </span>
-                    <span className="text-slate-500">{ep.status}</span>
+                    <span className="text-slate-500 dark:text-slate-500">{ep.status}</span>
                   </Link>
                 ))}
                 {(s.episodes || []).length === 0 && <div className="text-xs text-slate-600">No episodes yet.</div>}

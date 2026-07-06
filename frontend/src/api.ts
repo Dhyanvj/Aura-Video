@@ -236,6 +236,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ platform_urls: platformUrls }),
     }),
+  updateProjectMetadata: (id: number, partial: { title?: string; description?: string }) =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/metadata`, {
+      method: "PATCH",
+      body: JSON.stringify(partial),
+    }),
   getSettings: () => apiFetch<Settings>("/api/v1/settings"),
   updateSettings: (partial: Partial<Settings>) =>
     apiFetch<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(partial) }),

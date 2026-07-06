@@ -24,8 +24,8 @@ export default function Trends() {
   if (projects.length === 0) {
     return (
       <div>
-        <h1 className="mb-4 text-xl font-semibold text-slate-100">Trends</h1>
-        <p className="text-slate-400">
+        <h1 className="mb-4 text-xl font-semibold text-slate-900 dark:text-slate-100">Trends</h1>
+        <p className="text-slate-500 dark:text-slate-400">
           No trend reports yet. Start an auto-trend project from the Pipeline Board (leave the topic field empty).
         </p>
       </div>
@@ -34,11 +34,11 @@ export default function Trends() {
 
   return (
     <div>
-      <h1 className="mb-4 text-xl font-semibold text-slate-100">Trends</h1>
+      <h1 className="mb-4 text-xl font-semibold text-slate-900 dark:text-slate-100">Trends</h1>
       <div className="flex flex-col gap-6">
         {projects.map((project) => (
           <section key={project.id} className="rounded-lg border border-border bg-panel p-4">
-            <h2 className="mb-3 text-sm font-semibold text-slate-300">
+            <h2 className="mb-3 text-sm font-semibold text-slate-600 dark:text-slate-300">
               {project.niche || "General"} &middot; project #{project.id}
             </h2>
             <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
@@ -48,11 +48,11 @@ export default function Trends() {
                 .map((idea, i) => (
                   <div key={i} className="rounded border border-border bg-panel2 p-3">
                     <div className="mb-1 flex items-center justify-between">
-                      <span className="font-medium text-slate-100">{idea.title}</span>
-                      <span className="text-xs text-slate-400">score {idea.opportunity_score}</span>
+                      <span className="font-medium text-slate-900 dark:text-slate-100">{idea.title}</span>
+                      <span className="text-xs text-slate-500 dark:text-slate-400">score {idea.opportunity_score}</span>
                     </div>
-                    <p className="mb-2 text-xs text-slate-400">{idea.why_trending}</p>
-                    <div className="mb-2 flex flex-wrap gap-2 text-xs text-slate-500">
+                    <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">{idea.why_trending}</p>
+                    <div className="mb-2 flex flex-wrap gap-2 text-xs text-slate-500 dark:text-slate-500">
                       <span>{idea.suggested_format}</span>
                       <span>&middot;</span>
                       <span>{idea.estimated_competition} competition</span>

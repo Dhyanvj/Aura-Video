@@ -54,6 +54,11 @@ class MarkPublishedRequest(BaseModel):
     platform_urls: List[PlatformUrl] = []
 
 
+class UpdateMetadataRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+
 @router.post("/projects", summary="Start a new agent-driven video project")
 def create_project(request: Request, body: CreateProjectRequest):
     topic = (body.topic or "").strip()
@@ -164,6 +169,28 @@ def mark_published(request: Request, body: MarkPublishedRequest, project_id: int
         raise HttpException(task_id="", status_code=404, message=str(exc))
     except PermissionError as exc:
         raise HttpException(task_id="", status_code=409, message=str(exc))
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.patch(
+    "/projects/{project_id}/metadata",
+    summary="Autosave a title/description edit at Final Review (UI v3 reduced-clicks)",
+)
+def update_metadata(request: Request, body: UpdateMetadataRequest, project_id: int = Path(...)):
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise HttpException(task_id="", status_code=404, message=f"project {project_id} not found")
+        package = dict(project.publish_package or {})
+        if body.title is not None:
+            title_options = list(package.get("title_options") or [""])
+            title_options[0] = body.title
+            package["title_options"] = title_options
+        if body.description is not None:
+            package["description"] = body.description
+        project.publish_package = package
+        session.add(project)
+        session.commit()
     return utils.get_response(200, {"project_id": project_id})
 
 

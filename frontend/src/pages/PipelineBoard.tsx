@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { api, Project, Settings } from "../api";
 import { useLiveUpdates } from "../ws";
 import ProjectCard from "../components/ProjectCard";
+import ProjectFilters, { applyProjectFilters, EMPTY_FILTERS, ProjectFilterState } from "../components/ProjectFilters";
 
 const COLUMNS: { key: string; label: string; statuses: string[] }[] = [
   { key: "idea", label: "Idea & Script", statuses: ["IDEA_PENDING", "IDEA_READY", "SCRIPTING", "SCRIPT_READY"] },
@@ -23,6 +24,7 @@ export default function PipelineBoard() {
   const [audience, setAudience] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [filters, setFilters] = useState<ProjectFilterState>(EMPTY_FILTERS);
 
   const refresh = () => {
     api.listProjects().then(setProjects).catch((e) => setError(String(e)));
@@ -64,14 +66,14 @@ export default function PipelineBoard() {
     <div>
       <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold text-slate-100">Pipeline Board</h1>
-          <p className="text-sm text-slate-400">Every project, live, from idea to published post.</p>
+          <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Pipeline Board</h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Every project, live, from idea to published post.</p>
         </div>
         <div className="flex items-center gap-3">
           {settings && (
             <button
               onClick={toggleAutopilot}
-              className="rounded border border-border bg-panel2 px-3 py-1.5 text-sm text-slate-200 hover:border-accent"
+              className="rounded border border-border bg-panel2 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200 hover:border-accent"
               title="manual: approve topic, script, and video. semi: approve only the final video."
             >
               Autopilot: <span className="font-semibold">{settings.autopilot_level}</span>
@@ -79,7 +81,7 @@ export default function PipelineBoard() {
           )}
           <button
             onClick={() => setShowNewForm((v) => !v)}
-            className="rounded border border-border bg-panel2 px-3 py-1.5 text-sm text-slate-300 hover:border-accent hover:text-white"
+            className="rounded border border-border bg-panel2 px-3 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:border-accent hover:text-white"
             title="Skip the content-type flow: just a topic, niche, and audience"
           >
             Quick create
@@ -100,19 +102,19 @@ export default function PipelineBoard() {
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
               placeholder="Topic (leave empty for auto-trend)"
-              className="rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+              className="rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-500 dark:text-slate-500"
             />
             <input
               value={niche}
               onChange={(e) => setNiche(e.target.value)}
               placeholder="Niche (optional, uses Settings default)"
-              className="rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+              className="rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-500 dark:text-slate-500"
             />
             <input
               value={audience}
               onChange={(e) => setAudience(e.target.value)}
               placeholder="Audience (only used for auto-trend)"
-              className="rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+              className="rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-500 dark:text-slate-500"
             />
           </div>
           <button
@@ -125,16 +127,18 @@ export default function PipelineBoard() {
         </div>
       )}
 
-      {error && <div className="mb-4 rounded bg-rose-950/50 p-3 text-sm text-rose-300">{error}</div>}
+      {error && <div className="mb-4 rounded bg-rose-100 dark:bg-rose-950/50 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
+
+      <ProjectFilters filters={filters} onChange={setFilters} />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-3 xl:grid-cols-6">
         {COLUMNS.map((column) => {
-          const items = projects.filter((p) => column.statuses.includes(p.status));
+          const items = applyProjectFilters(projects, filters).filter((p) => column.statuses.includes(p.status));
           return (
             <div key={column.key} className="rounded-lg border border-border bg-panel p-3">
               <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-slate-200">{column.label}</h2>
-                <span className="text-xs text-slate-500">{items.length}</span>
+                <h2 className="text-sm font-semibold text-slate-800 dark:text-slate-200">{column.label}</h2>
+                <span className="text-xs text-slate-500 dark:text-slate-500">{items.length}</span>
               </div>
               <div className="flex flex-col gap-2">
                 {items.map((p) => (
