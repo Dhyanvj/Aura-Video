@@ -78,6 +78,11 @@ class VideoParams(BaseModel):
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
     match_materials_to_script: bool = False
+    # docs/DECISIONS_V3.md §6: opt-in per content type
+    # (ContentTypeTemplate.visual_strategy.ai_gen_allowed) - when a search
+    # term returns no usable stock candidates, generates a free Pollinations
+    # image + Ken Burns clip instead of leaving a gap in the timeline.
+    ai_image_fallback_enabled: bool = False
     video_count: Optional[int] = 1
 
     video_source: Optional[str] = "pexels"

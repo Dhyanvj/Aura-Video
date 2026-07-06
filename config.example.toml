@@ -48,6 +48,13 @@ pixabay_api_keys = []
 # 特别注意格式，Key 用英文双引号括起来，多个Key用逗号隔开
 coverr_api_keys = []
 
+# Google Fact Check Tools API Key (optional, free) — https://console.cloud.google.com
+# Enable the "Fact Check Tools API" and create an API key. Used by the
+# Researcher agent as a free supplementary signal alongside its existing
+# >=2-source verification for Motivational/Fun Facts topics - never a
+# replacement for it. Leave empty to skip (research still works normally).
+google_fact_check_api_key = ""
+
 # TwelveLabs API Key (optional) — https://twelvelabs.io
 # TwelveLabs (可选) 视频理解 / 多模态嵌入集成。
 # Enables two opt-in features:

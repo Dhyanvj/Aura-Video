@@ -155,6 +155,7 @@ def _get_content_type_info(content_type_id: Optional[str]) -> Optional[dict]:
         return {
             "research_required": template.research_required,
             "freshness_window_hours": template.freshness_window_hours,
+            "ai_gen_allowed": bool((template.visual_strategy or {}).get("ai_gen_allowed")),
         }
 
 
@@ -532,8 +533,16 @@ def _resolve_voice_name(project_id: int, brief: CreativeBrief) -> str:
     return resolved
 
 
+def _ai_image_fallback_allowed(content_type_id: Optional[str]) -> bool:
+    info = _get_content_type_info(content_type_id)
+    return bool(info and info.get("ai_gen_allowed"))
+
+
 def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) -> VideoParams:
     quote = brief.quote_or_lesson
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        content_type_id = project.content_type_id if project else None
     return VideoParams(
         video_subject=topic,
         video_script=brief.script,
@@ -546,6 +555,7 @@ def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) 
         bgm_file=brief.bgm_file or "",
         quote_text=quote.text if quote else None,
         quote_attribution=(quote.attribution if quote and quote.is_quote else None),
+        ai_image_fallback_enabled=_ai_image_fallback_allowed(content_type_id),
     )
 
 

@@ -291,6 +291,33 @@ class TestQuoteOrLessonWiring(unittest.TestCase):
         self.assertIsNone(params.quote_text)
         self.assertIsNone(params.quote_attribution)
 
+    def test_video_params_enable_ai_image_fallback_when_content_type_allows_it(self):
+        # docs/DECISIONS_V3.md §6: fun_facts' seeded visual_strategy has
+        # ai_gen_allowed=True (app/db/seed.py).
+        project_id = self._create_project(content_type_id="fun_facts")
+        brief = _brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=None)
+
+        params = orchestrator._video_params_from_brief(project_id, "ocean facts", brief)
+
+        self.assertTrue(params.ai_image_fallback_enabled)
+
+    def test_video_params_disable_ai_image_fallback_when_content_type_forbids_it(self):
+        # world_news' seeded visual_strategy has ai_gen_allowed=False.
+        project_id = self._create_project(content_type_id="world_news")
+        brief = _brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=None)
+
+        params = orchestrator._video_params_from_brief(project_id, "a story", brief)
+
+        self.assertFalse(params.ai_image_fallback_enabled)
+
+    def test_video_params_disable_ai_image_fallback_with_no_content_type(self):
+        project_id = self._create_project(content_type_id=None)
+        brief = _brief_recommending("en-US-GuyNeural-Male", quote_or_lesson=None)
+
+        params = orchestrator._video_params_from_brief(project_id, "a topic", brief)
+
+        self.assertFalse(params.ai_image_fallback_enabled)
+
 
 if __name__ == "__main__":
     unittest.main()

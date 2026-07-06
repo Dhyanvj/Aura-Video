@@ -311,6 +311,7 @@ def download_videos(
     max_clip_duration: int = 5,
     match_script_order: bool = False,
     metadata_out: Optional[list] = None,
+    ai_image_fallback_enabled: bool = False,
 ) -> List[str]:
     """
     metadata_out, if given, is appended in place with one
@@ -342,6 +343,7 @@ def download_videos(
             max_clip_duration=max_clip_duration,
             material_directory=material_directory,
             metadata_out=metadata_out,
+            ai_image_fallback_enabled=ai_image_fallback_enabled,
         )
 
     valid_video_items = []  # list of (MaterialInfo, originating search_term)
@@ -411,6 +413,7 @@ def _download_videos_by_script_order(
     max_clip_duration: int,
     material_directory: str,
     metadata_out: Optional[list] = None,
+    ai_image_fallback_enabled: bool = False,
 ) -> List[str]:
     """
     按脚本文案顺序下载素材。
@@ -420,11 +423,23 @@ def _download_videos_by_script_order(
     脚本主题就排不上时间线。这里按关键词分组后轮询下载：
     第 1 轮取每个关键词的第 1 个候选，第 2 轮取每个关键词的第 2 个候选。
     这样在不重写视频合成引擎的前提下，尽量保证素材顺序贴近文案顺序。
+
+    ai_image_fallback_enabled (docs/DECISIONS_V3.md §6): a search term with
+    zero stock candidates gets a free Pollinations image + Ken Burns clip
+    instead of silently dropping out of the timeline. Scope note: these
+    fallback clips are appended after the round-robin stock clips rather
+    than interleaved at the term's original script position - the
+    round-robin loop below is a multi-round duration-filling algorithm, not
+    a 1:1 term-to-clip mapping, so precisely interleaving a one-shot
+    generated clip into it isn't a small change. Documented as a deliberate
+    simplification in docs/REVIEW_FINDINGS.md, not silently accepted as
+    "close enough."
     """
     logger.info("downloading videos with script-order material matching")
     candidate_groups = []
     valid_video_urls = set()
     found_duration = 0.0
+    zero_candidate_terms = []
 
     for search_term in search_terms:
         video_items = search_videos(
@@ -444,6 +459,8 @@ def _download_videos_by_script_order(
 
         if term_items:
             candidate_groups.append((search_term, term_items))
+        else:
+            zero_candidate_terms.append(search_term)
 
     logger.info(
         f"found total ordered video candidates: {sum(len(items) for _, items in candidate_groups)}, "
@@ -494,6 +511,28 @@ def _download_videos_by_script_order(
         if not has_candidate:
             break
         candidate_index += 1
+
+    if ai_image_fallback_enabled and zero_candidate_terms:
+        from app.services import ai_images
+
+        # Mirrors save_video's own convention for an unset directory - it
+        # resolves "" to storage/cache_videos internally, but
+        # ai_images.generate_ai_image_clip takes an already-resolved
+        # directory (os.makedirs("") would fail), so resolve it once here.
+        fallback_save_dir = material_directory or utils.storage_dir("cache_videos")
+        for search_term in zero_candidate_terms:
+            if total_duration > audio_duration:
+                break
+            clip_path = ai_images.generate_ai_image_clip(search_term, max_clip_duration, fallback_save_dir)
+            if not clip_path:
+                continue
+            logger.info(f"AI image fallback clip generated for '{search_term}': {clip_path}")
+            video_paths.append(clip_path)
+            if metadata_out is not None:
+                metadata_out.append(
+                    {"search_term": search_term, "provider": "pollinations", "url": "", "local_path": clip_path}
+                )
+            total_duration += max_clip_duration
 
     logger.success(f"downloaded {len(video_paths)} ordered videos")
     return video_paths

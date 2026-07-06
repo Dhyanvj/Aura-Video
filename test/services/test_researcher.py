@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.agents.researcher import Researcher
 from app.agents.schemas import ResearchDossier, SourceCitation
+from app.services import news_sources
 
 
 class TestResearcherPromptSelection(unittest.TestCase):
@@ -45,7 +46,9 @@ class TestResearcherPromptSelection(unittest.TestCase):
 class TestResearcherResearch(unittest.TestCase):
     def test_failed_web_search_returns_reduced_verification_dossier_without_raising(self):
         researcher = Researcher(project_id=None)
-        with patch.object(researcher, "call_with_web_search", return_value=("", [], False)):
+        with patch.object(researcher, "call_with_web_search", return_value=("", [], False)), patch.object(
+            news_sources, "fetch_ai_news_signals", return_value=[]
+        ):
             dossier = researcher.research(content_type_id="ai_news", topic_hint="a story", freshness_window_hours=24)
 
         self.assertTrue(dossier.reduced_verification)
@@ -79,10 +82,62 @@ class TestResearcherResearch(unittest.TestCase):
         structured = ResearchDossier(topic="a story", freshness_window_hours=None)
         with patch.object(
             researcher, "call_with_web_search", return_value=("a story happened", [], True)
-        ), patch.object(researcher, "call_json", return_value=structured):
+        ), patch.object(researcher, "call_json", return_value=structured), patch.object(
+            news_sources, "fetch_ai_news_signals", return_value=[]
+        ):
             dossier = researcher.research(content_type_id="ai_news", topic_hint="a story", freshness_window_hours=24)
 
         self.assertEqual(dossier.freshness_window_hours, 24)
+
+
+class TestResearcherSupplementarySignals(unittest.TestCase):
+    """docs/DECISIONS_V3.md §6: free supplementary signals, additive to the primary web-search call."""
+
+    def _research(self, content_type_id, **overrides):
+        researcher = Researcher(project_id=None)
+        structured = ResearchDossier(topic="t")
+        with patch.object(
+            researcher, "call_with_web_search", return_value=("notes", [], True)
+        ) as mock_search, patch.object(researcher, "call_json", return_value=structured):
+            researcher.research(content_type_id=content_type_id, topic_hint="a topic", **overrides)
+        return mock_search
+
+    def test_ai_news_gets_hn_and_rss_signals_in_the_payload(self):
+        with patch.object(news_sources, "fetch_ai_news_signals", return_value=[{"title": "x"}]) as mock_fetch:
+            mock_search = self._research("ai_news", freshness_window_hours=24)
+        mock_fetch.assert_called_once_with("a topic")
+        _, kwargs = mock_search.call_args
+        self.assertIn('"supplementary_signals"', kwargs["user"])
+
+    def test_world_news_gets_gdelt_signals_in_the_payload(self):
+        with patch.object(news_sources, "fetch_gdelt_articles", return_value=[{"title": "y"}]) as mock_fetch:
+            mock_search = self._research("world_news", freshness_window_hours=24)
+        mock_fetch.assert_called_once_with("a topic")
+        _, kwargs = mock_search.call_args
+        self.assertIn('"supplementary_signals"', kwargs["user"])
+
+    def test_fun_facts_does_not_fetch_news_signals(self):
+        with patch.object(news_sources, "fetch_ai_news_signals") as mock_ai, patch.object(
+            news_sources, "fetch_gdelt_articles"
+        ) as mock_gdelt:
+            self._research("fun_facts")
+        mock_ai.assert_not_called()
+        mock_gdelt.assert_not_called()
+
+    def test_fact_check_signal_included_when_configured_and_found(self):
+        with patch.object(news_sources, "is_fact_check_configured", return_value=True), patch.object(
+            news_sources, "fetch_fact_checks", return_value=[{"rating": "False"}]
+        ):
+            mock_search = self._research("fun_facts")
+        _, kwargs = mock_search.call_args
+        self.assertIn('"fact_check_signals"', kwargs["user"])
+
+    def test_fact_check_not_configured_makes_no_call(self):
+        with patch.object(news_sources, "is_fact_check_configured", return_value=False), patch.object(
+            news_sources, "fetch_fact_checks"
+        ) as mock_fetch:
+            self._research("fun_facts")
+        mock_fetch.assert_not_called()
 
 
 if __name__ == "__main__":

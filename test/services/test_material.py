@@ -248,6 +248,88 @@ class TestMaterialTlsVerification(unittest.TestCase):
 
         self.assertEqual(metadata_out, [{"search_term": "a topic", "provider": "pexels", "url": "https://v.example/a1.mp4", "local_path": "/tmp/a1.mp4"}])
 
+    def test_ai_image_fallback_used_for_a_zero_candidate_term_when_enabled(self):
+        # docs/DECISIONS_V3.md §6: a search term with zero stock candidates
+        # gets a free Pollinations+Ken-Burns clip instead of silently
+        # dropping out of the timeline, when the content type opts in.
+        search_results = {
+            "covered term": [material.MaterialInfo(provider="pexels", url="https://v.example/a1.mp4", duration=10)],
+            "uncovered term": [],
+        }
+
+        def fake_save_video(video_url, save_dir=""):
+            return f"/tmp/{video_url.rsplit('/', 1)[-1]}"
+
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=lambda **kw: search_results.get(kw["search_term"], [])),
+            patch.object(material, "save_video", side_effect=fake_save_video),
+            patch("app.services.ai_images.generate_ai_image_clip", return_value="/tmp/ai-clip-uncovered.mp4") as mock_ai,
+        ):
+            metadata_out = []
+            result = material.download_videos(
+                task_id="ai-fallback-test",
+                search_terms=["covered term", "uncovered term"],
+                source="pexels",
+                audio_duration=20,
+                max_clip_duration=5,
+                match_script_order=True,
+                metadata_out=metadata_out,
+                ai_image_fallback_enabled=True,
+            )
+
+        mock_ai.assert_called_once_with("uncovered term", 5, material.utils.storage_dir("cache_videos"))
+        self.assertIn("/tmp/ai-clip-uncovered.mp4", result)
+        fallback_entry = next(m for m in metadata_out if m["search_term"] == "uncovered term")
+        self.assertEqual(fallback_entry["provider"], "pollinations")
+
+    def test_ai_image_fallback_not_used_when_disabled(self):
+        search_results = {"uncovered term": []}
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=lambda **kw: search_results.get(kw["search_term"], [])),
+            patch("app.services.ai_images.generate_ai_image_clip") as mock_ai,
+        ):
+            result = material.download_videos(
+                task_id="ai-fallback-disabled-test",
+                search_terms=["uncovered term"],
+                source="pexels",
+                audio_duration=5,
+                max_clip_duration=5,
+                match_script_order=True,
+                ai_image_fallback_enabled=False,
+            )
+
+        mock_ai.assert_not_called()
+        self.assertEqual(result, [])
+
+    def test_ai_image_fallback_skipped_once_duration_budget_is_met(self):
+        search_results = {
+            "covered term": [material.MaterialInfo(provider="pexels", url="https://v.example/a1.mp4", duration=10)],
+            "uncovered term": [],
+        }
+
+        def fake_save_video(video_url, save_dir=""):
+            return "/tmp/a1.mp4"
+
+        with (
+            patch.dict(config.app, {"material_directory": ""}),
+            patch.object(material, "search_videos_pexels", side_effect=lambda **kw: search_results.get(kw["search_term"], [])),
+            patch.object(material, "save_video", side_effect=fake_save_video),
+            patch("app.services.ai_images.generate_ai_image_clip") as mock_ai,
+        ):
+            material.download_videos(
+                task_id="ai-fallback-budget-test",
+                search_terms=["covered term", "uncovered term"],
+                source="pexels",
+                audio_duration=2,  # already met by the one covered-term clip
+                max_clip_duration=5,
+                match_script_order=True,
+                ai_image_fallback_enabled=True,
+            )
+
+        mock_ai.assert_not_called()
+
 
 class TestCoverrProvider(unittest.TestCase):
     """

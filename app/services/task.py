@@ -295,6 +295,7 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             max_clip_duration=params.video_clip_duration,
             match_script_order=params.match_materials_to_script,
             metadata_out=clip_metadata,
+            ai_image_fallback_enabled=params.ai_image_fallback_enabled,
         )
         if not downloaded_videos:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)

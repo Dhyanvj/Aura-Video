@@ -2,6 +2,7 @@ from typing import List, Optional
 
 from app.agents.base import BaseAgent
 from app.agents.schemas import ResearchDossier
+from app.services import news_sources
 from app.utils import utils
 
 _BASE_INSTRUCTIONS = """You are the Researcher for a short-form vertical video channel. Use the web_search
@@ -10,7 +11,12 @@ fact you haven't actually checked.
 
 Always look for at least 2 independent sources for anything you'll present as a verified fact. If you can't
 find 2 independent sources, say so plainly rather than presenting a single-source claim as solid. Avoid the
-topics listed as "recent_topics_to_avoid" - the channel has already covered those."""
+topics listed as "recent_topics_to_avoid" - the channel has already covered those.
+
+If "supplementary_signals" or "fact_check_signals" are given, they're free, non-authoritative leads (recent
+headlines, or an existing fact-check verdict on a similar claim) to help you search more precisely and cross-
+check freshness/accuracy - always verify them yourself via web_search rather than trusting them at face value;
+they're a starting point, not a source you can cite directly."""
 
 _MOTIVATIONAL_PROMPT = f"""{_BASE_INSTRUCTIONS}
 
@@ -90,6 +96,7 @@ class Researcher(BaseAgent):
             "recent_topics_to_avoid": recent_topics or [],
             "past_performance_notes": performance_notes or [],
         }
+        self._add_supplementary_signals(payload, content_type_id, topic_hint or niche)
         summary, sources, ok = self.call_with_web_search(system=system, user=utils.to_json(payload))
 
         if not ok:
@@ -105,6 +112,33 @@ class Researcher(BaseAgent):
             )
 
         return self._structure_dossier(topic_hint, summary, sources, freshness_window_hours)
+
+    def _add_supplementary_signals(self, payload: dict, content_type_id: str, query: str) -> None:
+        """
+        docs/DECISIONS_V3.md §6: free, additive leads alongside the primary
+        Anthropic web-search call - never the sole source, and never allowed
+        to block/slow the research call itself if they fail (each already
+        degrades to [] internally; this is just choosing which free sources
+        apply to which content type).
+        """
+        if not query:
+            return
+        if content_type_id == "ai_news":
+            signals = news_sources.fetch_ai_news_signals(query)
+            if signals:
+                payload["supplementary_signals"] = signals
+                self.log_event("tool_call", message=f"Hacker News/RSS supplement: {len(signals)} signal(s)")
+        elif content_type_id == "world_news":
+            signals = news_sources.fetch_gdelt_articles(query)
+            if signals:
+                payload["supplementary_signals"] = signals
+                self.log_event("tool_call", message=f"GDELT supplement: {len(signals)} signal(s)")
+
+        if news_sources.is_fact_check_configured():
+            fact_checks = news_sources.fetch_fact_checks(query)
+            if fact_checks:
+                payload["fact_check_signals"] = fact_checks
+                self.log_event("tool_call", message=f"Google Fact Check supplement: {len(fact_checks)} signal(s)")
 
     def _research_prompt(self, content_type_id: str, freshness_window_hours: Optional[int]) -> str:
         if content_type_id == "motivational":
