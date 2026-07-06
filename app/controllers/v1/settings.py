@@ -1,11 +1,12 @@
 from typing import List, Optional
 
-from fastapi import Request
+from fastapi import Path, Query, Request
 from pydantic import BaseModel
 
 from app.config import config
 from app.controllers.v1.base import new_router
-from app.services import scheduler
+from app.models.exception import HttpException
+from app.services import playbook, scheduler
 from app.utils import utils
 
 router = new_router()
@@ -73,3 +74,55 @@ def _current_settings() -> dict:
         # [features].publishing_enabled in config.toml.
         "publishing_enabled": config.features.get("publishing_enabled", False),
     }
+
+
+class UpdateBulletRequest(BaseModel):
+    enabled: Optional[bool] = None
+    text: Optional[str] = None
+
+
+def _playbook_summary(pb) -> dict:
+    return {
+        "id": pb.id,
+        "agent": pb.agent,
+        "content_type_id": pb.content_type_id,
+        "version": pb.version,
+        "bullets": pb.bullets,
+        "is_active": pb.is_active,
+        "created_at": pb.created_at.isoformat(),
+    }
+
+
+@router.get("/playbooks", summary="List the active playbook for every (agent, content type) pair that has one")
+def list_playbooks(request: Request):
+    return utils.get_response(200, {"playbooks": [_playbook_summary(p) for p in playbook.list_all_playbooks()]})
+
+
+@router.get("/playbooks/versions", summary="Full version history for one (agent, content type) pair")
+def get_playbook_versions(request: Request, agent: str = Query(...), content_type_id: Optional[str] = Query(None)):
+    versions = playbook.list_versions(agent, content_type_id)
+    return utils.get_response(200, {"versions": [_playbook_summary(p) for p in versions]})
+
+
+@router.patch(
+    "/playbooks/{playbook_id}/bullets/{bullet_index}",
+    summary="Edit or disable one playbook bullet - creates a new version",
+)
+def update_playbook_bullet(
+    request: Request, body: UpdateBulletRequest, playbook_id: int = Path(...), bullet_index: int = Path(...)
+):
+    fields = {k: v for k, v in body.model_dump(exclude_unset=True).items() if v is not None}
+    try:
+        updated = playbook.update_bullet(playbook_id, bullet_index, **fields)
+    except ValueError as exc:
+        raise HttpException(task_id="", status_code=404, message=str(exc))
+    return utils.get_response(200, _playbook_summary(updated))
+
+
+@router.post("/playbooks/{playbook_id}/rollback", summary="Reactivate a prior playbook version")
+def rollback_playbook(request: Request, playbook_id: int = Path(...)):
+    try:
+        restored = playbook.rollback_to(playbook_id)
+    except ValueError as exc:
+        raise HttpException(task_id="", status_code=404, message=str(exc))
+    return utils.get_response(200, _playbook_summary(restored))

@@ -20,6 +20,7 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "storage_path": "TEXT",
     "hook_pattern": "TEXT",
     "opening_line": "TEXT",
+    "human_edits": "JSON",
 }
 _CONTENTTYPETEMPLATE_NEW_COLUMNS = {
     "description": "TEXT NOT NULL DEFAULT ''",

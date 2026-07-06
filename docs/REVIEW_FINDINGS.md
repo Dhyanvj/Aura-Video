@@ -61,3 +61,25 @@ The brief's §5 says "global search + filters on all list views." Implemented as
 ### [Deliberate scope decision] Clip-index bridge is not the DESIGN_V2.md Visual Director
 
 Recorded for traceability, not a defect. `app/services/storyboard.py`'s `ProjectClip` model has no vision score, no timestamps, and no AI-generation escalation — it's the current flat search-terms renderer's clip list made addressable, per the option the user explicitly chose in docs/DECISIONS_V3.md §4. The full vision-scored Visual Director from docs/DESIGN_V2.md remains unbuilt and out of scope for this pass.
+
+---
+
+## Milestone 5: Learning loop
+
+### [Deliberate scope decision] Only CreativeDirector consumes playbook bullets in this pass
+
+`app/services/playbook.py`'s `get_active_bullets(agent, content_type_id)` is generic and already scoped per-agent, but only `CreativeDirector.write()` was wired to call it. TrendScout, Researcher, QualityReviewer, and Publisher are structurally ready (the playbook/retrospective backend has no per-agent special-casing) but don't inject bullets into their prompts yet - a one-line addition each at their existing call sites in `orchestrator.py`, following the exact pattern used for `creative_director`. Scoped this way because Creative Director is where the brief itself said the highest-value lessons land (script/hook/structure), and verifying one agent end-to-end (with real Playwright-verified UI) was prioritized over shallow wiring across five.
+
+### [Found and fixed during implementation] Misattached route decorator
+
+**What:** An edit meant to insert a new `_record_human_edit` helper function above the `update_metadata` endpoint instead left the `@router.patch(...)` decorator attached to the helper, turning it into the actual route handler FastAPI called - every request 400'd with a confusing "field/original_value/new_value/edits required" validation error that had nothing to do with the real request body.
+
+**Caught:** immediately, because the full test suite was run right after writing the code (4 tests failed with an unexpected 400). Root-caused by re-reading the file rather than guessing, which showed the decorator sitting above the wrong function.
+
+**Fix:** moved the decorator to the correct function. A regression-safe way to describe this: routes should be re-verified via a real HTTP call (which the existing `TestClient`-based tests already do) whenever the decorated function is touched by an edit, not just typechecked/imported.
+
+### [Found and fixed during implementation] Naive human-edit capture would have recorded keystroke noise, not a clean diff
+
+**What:** The first version of the `human_edits` capture in the new metadata-autosave endpoint appended a new `{field, before, after}` entry on every call. Since autosave fires on a debounce tick while the human is still typing, this would have flooded `human_edits` with one entry per keystroke-batch (before="Old T", after="Old Ti", before="Old Ti", after="Old Tit", ...) instead of the one clean "AI drafted X, human corrected to Y" diff the retrospective (docs/DECISIONS_V3.md §3) actually needs.
+
+**Fix:** `_record_human_edit` upserts one entry per field, keyed off the first-seen (agent-drafted) value as `before`, updating only `after` on subsequent calls; the entry is dropped if the human types their way back to the original value. Covered by three dedicated tests (`test_human_edits_records_one_clean_diff_not_one_per_autosave_call` and two others) verifying this doesn't regress.

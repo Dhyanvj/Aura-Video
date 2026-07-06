@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, ContentTypeTemplate, Settings as SettingsT } from "../api";
+import { api, ContentTypeTemplate, PlaybookT, Settings as SettingsT } from "../api";
 
 const PLATFORMS = ["tiktok", "instagram", "youtube"];
 
@@ -172,15 +172,99 @@ function ContentTypeRow({
   );
 }
 
+function PlaybookCard({ playbook, onChanged }: { playbook: PlaybookT; onChanged: (updated: PlaybookT) => void }) {
+  const [showHistory, setShowHistory] = useState(false);
+  const [versions, setVersions] = useState<PlaybookT[] | null>(null);
+
+  const toggleBullet = async (index: number, enabled: boolean) => {
+    const updated = await api.updatePlaybookBullet(playbook.id, index, { enabled });
+    onChanged(updated);
+  };
+
+  const loadHistory = async () => {
+    const next = !showHistory;
+    setShowHistory(next);
+    if (next && versions === null) {
+      setVersions(await api.getPlaybookVersions(playbook.agent, playbook.content_type_id));
+    }
+  };
+
+  const rollback = async (versionId: number) => {
+    const restored = await api.rollbackPlaybook(versionId);
+    onChanged(restored);
+    setVersions(await api.getPlaybookVersions(playbook.agent, playbook.content_type_id));
+  };
+
+  return (
+    <div className="rounded border border-border bg-panel2 p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
+          {playbook.agent} &middot; {playbook.content_type_id || "all content types"}
+        </span>
+        <button onClick={loadHistory} className="text-xs text-accent hover:underline">
+          v{playbook.version} &middot; {showHistory ? "hide" : "history"}
+        </button>
+      </div>
+      <ul className="flex flex-col gap-1.5">
+        {playbook.bullets.map((bullet, i) => (
+          <li key={i} className="flex items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              checked={bullet.enabled}
+              onChange={(e) => toggleBullet(i, e.target.checked)}
+              className="mt-0.5 shrink-0"
+            />
+            <span
+              className={
+                bullet.enabled
+                  ? "text-slate-700 dark:text-slate-300"
+                  : "text-slate-500 line-through dark:text-slate-500"
+              }
+            >
+              {bullet.text}
+              {bullet.flagged_for_review && (
+                <span className="ml-1 rounded bg-amber-100 px-1 text-[10px] text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                  flagged
+                </span>
+              )}
+            </span>
+          </li>
+        ))}
+        {playbook.bullets.length === 0 && <p className="text-xs text-slate-500">No bullets yet.</p>}
+      </ul>
+      {showHistory && (
+        <div className="mt-3 border-t border-border pt-2">
+          {versions === null && <p className="text-xs text-slate-500">Loading...</p>}
+          {versions?.map((v) => (
+            <div key={v.id} className="flex items-center justify-between py-1 text-xs">
+              <span className="text-slate-600 dark:text-slate-400">
+                v{v.version} &middot; {new Date(v.created_at).toLocaleDateString()} &middot; {v.bullets.length} bullet(s)
+                {v.is_active && <span className="ml-1 text-emerald-500">(active)</span>}
+              </span>
+              {!v.is_active && (
+                <button onClick={() => rollback(v.id)} className="text-accent hover:underline">
+                  Roll back to this version
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Settings() {
   const [settings, setSettings] = useState<SettingsT | null>(null);
   const [contentTypes, setContentTypes] = useState<ContentTypeTemplate[]>([]);
+  const [playbooks, setPlaybooks] = useState<PlaybookT[]>([]);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   useEffect(() => {
     api.getSettings().then(setSettings);
     api.listContentTypes().then(setContentTypes);
+    api.listPlaybooks().then(setPlaybooks);
   }, []);
 
   const save = async (partial: Partial<SettingsT>) => {
@@ -323,6 +407,34 @@ export default function Settings() {
             />
           ))}
           {contentTypes.length === 0 && <p className="text-xs text-slate-500 dark:text-slate-500">Loading...</p>}
+        </div>
+      </section>
+
+      <section className="mb-6 rounded-lg border border-border bg-panel p-4">
+        <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Playbooks</h2>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Lessons distilled from past projects' retrospectives, per agent and content type. Disable a bullet you
+          disagree with, or roll back to an earlier version - never edited directly by the system without a human
+          reviewing it here first.
+        </p>
+        <div className="flex flex-col gap-2">
+          {playbooks.map((p) => (
+            <PlaybookCard
+              key={`${p.agent}:${p.content_type_id}`}
+              playbook={p}
+              onChanged={(updated) =>
+                setPlaybooks((prev) =>
+                  prev.map((x) => (x.agent === updated.agent && x.content_type_id === updated.content_type_id ? updated : x)),
+                )
+              }
+            />
+          ))}
+          {playbooks.length === 0 && (
+            <p className="text-xs text-slate-500 dark:text-slate-500">
+              No playbooks yet - the first one is distilled after 10 projects of the same content type complete
+              Final Review.
+            </p>
+          )}
         </div>
       </section>
 

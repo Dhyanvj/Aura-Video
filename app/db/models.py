@@ -80,6 +80,12 @@ class VideoProject(SQLModel, table=True):
     hook_pattern: Optional[str] = None
     opening_line: Optional[str] = None
 
+    # v3 learning loop (docs/DECISIONS_V3.md §3): {field, before, after}
+    # entries captured whenever a human edits agent-drafted metadata at Final
+    # Review - the highest-value signal for the retrospective pass, since
+    # it's a direct record of "the AI got this wrong and a human fixed it."
+    human_edits: Optional[list] = Field(default=None, sa_column=Column(JSON))
+
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     published_at: Optional[datetime] = None
@@ -189,6 +195,42 @@ class ProjectClip(SQLModel, table=True):
     provider: str = ""
     source_url: str = ""
     local_path: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class LessonLearned(SQLModel, table=True):
+    """
+    One lesson from a single project's retrospective (docs/DECISIONS_V3.md
+    §3) - raw material for the periodic playbook distillation, never
+    injected into a prompt directly.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="videoproject.id", index=True)
+    agent: str = Field(index=True)
+    content_type_id: Optional[str] = Field(default=None, index=True)
+    what_worked: str = ""
+    what_failed: str = ""
+    actionable_rule: str = ""
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class Playbook(SQLModel, table=True):
+    """
+    A versioned, curated set of <=15 bullets for one (agent, content_type)
+    pair (docs/DECISIONS_V3.md §3). Every edit - a distillation run, or a
+    human toggling/editing a bullet in Settings - inserts a new row rather
+    than mutating one in place, so "full version history with one-click
+    rollback" is just "make a different version the active one," never a
+    lossy in-place edit.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    agent: str = Field(index=True)
+    content_type_id: Optional[str] = Field(default=None, index=True)
+    version: int
+    bullets: list = Field(sa_column=Column(JSON))  # list of PlaybookBullet.model_dump()
+    is_active: bool = Field(default=True, index=True)
     created_at: datetime = Field(default_factory=utcnow)
 
 

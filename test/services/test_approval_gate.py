@@ -127,6 +127,25 @@ class TestApprovalGateEnforcement(IsolatedStorageDirMixin, unittest.TestCase):
         self.assertEqual(project.status, ProjectStatus.APPROVED.value)
         self.assertIsNone(project.published_at)
 
+    def test_approval_triggers_a_background_retrospective(self):
+        # docs/DECISIONS_V3.md §3: a retrospective runs once a project
+        # "completes Final Review" - i.e. right when a human approves it.
+        import time
+
+        project_id = self._create_project(
+            ProjectStatus.AWAITING_HUMAN_APPROVAL,
+            video_path="/tmp/some-video.mp4",
+            publish_package={"title_options": ["Title A"], "platform_variants": []},
+        )
+        with patch.dict(config.features, {"publishing_enabled": False}), patch.object(
+            orchestrator, "_run_retrospective"
+        ) as mock_retro:
+            orchestrator.approve_and_publish(project_id, [])
+            deadline = time.time() + 5
+            while not mock_retro.called and time.time() < deadline:
+                time.sleep(0.05)
+        mock_retro.assert_called_once_with(project_id)
+
 
 class TestMarkAsPublished(IsolatedStorageDirMixin, unittest.TestCase):
     """
@@ -315,6 +334,42 @@ class TestMetadataAutosaveEndpoint(IsolatedStorageDirMixin, unittest.TestCase):
     def test_unknown_project_returns_404(self):
         response = self.client.patch("/api/v1/projects/999999/metadata", json={"title": "x"})
         self.assertEqual(response.status_code, 404)
+
+    def test_human_edits_records_one_clean_diff_not_one_per_autosave_call(self):
+        # docs/DECISIONS_V3.md §3: autosave fires on a debounce tick per
+        # keystroke-batch while typing - human_edits must end up with ONE
+        # entry per field (before=AI draft, after=final value), not one
+        # noisy entry per autosave call.
+        project_id = self._create_project(publish_package={"title_options": ["AI Draft Title"]})
+        self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "AI Draft Tit"})
+        self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "AI Draft Titl"})
+        response = self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "Final Human Title"})
+        self.assertEqual(response.status_code, 200)
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        self.assertEqual(len(project.human_edits), 1)
+        self.assertEqual(project.human_edits[0], {"field": "title", "before": "AI Draft Title", "after": "Final Human Title"})
+
+    def test_human_edits_entry_dropped_if_human_reverts_to_original(self):
+        project_id = self._create_project(publish_package={"title_options": ["AI Draft Title"]})
+        self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "Something else"})
+        self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "AI Draft Title"})
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        self.assertEqual(project.human_edits, [])
+
+    def test_human_edits_tracks_title_and_description_independently(self):
+        project_id = self._create_project(publish_package={"title_options": ["T"], "description": "D"})
+        self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"title": "T2"})
+        self.client.patch(f"/api/v1/projects/{project_id}/metadata", json={"description": "D2"})
+
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+        fields = {e["field"]: e for e in project.human_edits}
+        self.assertEqual(fields["title"], {"field": "title", "before": "T", "after": "T2"})
+        self.assertEqual(fields["description"], {"field": "description", "before": "D", "after": "D2"})
 
 
 if __name__ == "__main__":

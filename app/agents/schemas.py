@@ -145,6 +145,41 @@ class OriginalityJudgment(BaseModel):
     rationale: str = ""
 
 
+_RETROSPECTIVE_AGENTS = "trend_scout | researcher | creative_director | quality_reviewer | publisher"
+
+
+class RetrospectiveLesson(BaseModel):
+    """
+    One lesson from a completed project's retrospective (docs/DECISIONS_V3.md
+    §3), attributed to the single agent it's actionable for.
+    """
+
+    agent: str  # trend_scout | researcher | creative_director | quality_reviewer | publisher
+    what_worked: str = ""
+    what_failed: str = ""
+    actionable_rule: str
+
+
+class RetrospectiveResult(BaseModel):
+    lessons: List[RetrospectiveLesson] = Field(default_factory=list)
+
+
+class PlaybookBullet(BaseModel):
+    """One row of docs/DECISIONS_V3.md §3's distilled per-agent, per-content-type playbook."""
+
+    text: str
+    enabled: bool = True
+    source_lesson_ids: List[int] = Field(default_factory=list)
+    # Set at the distillation pass that follows a run of worse-than-average
+    # QA scores while this bullet was active - surfaced for human review, not
+    # auto-removed (never self-modifying without a human in the loop).
+    flagged_for_review: bool = False
+
+
+class PlaybookDistillation(BaseModel):
+    bullets: List[PlaybookBullet] = Field(max_length=15)
+
+
 class PlatformVariant(BaseModel):
     platform: str  # youtube_shorts | instagram_reels | tiktok
     caption: str

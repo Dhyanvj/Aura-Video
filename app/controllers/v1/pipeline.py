@@ -172,6 +172,25 @@ def mark_published(request: Request, body: MarkPublishedRequest, project_id: int
     return utils.get_response(200, {"project_id": project_id})
 
 
+def _record_human_edit(edits: list, field: str, original_value: str, new_value: str) -> list:
+    """
+    Upserts one {field, before, after} entry per field rather than appending
+    on every autosave call - autosave fires per debounce tick while typing,
+    so a naive append would flood human_edits with keystroke-by-keystroke
+    noise instead of the one clean "AI drafted X, human corrected to Y" diff
+    the retrospective (docs/DECISIONS_V3.md §3) actually wants. `before`
+    always stays pinned to the first-seen (agent-drafted) value; `after`
+    tracks the latest edit; the entry is dropped entirely if the human types
+    their way back to the original value.
+    """
+    existing = next((e for e in edits if e["field"] == field), None)
+    before = existing["before"] if existing else original_value
+    if before == new_value:
+        return [e for e in edits if e["field"] != field]
+    entry = {"field": field, "before": before, "after": new_value}
+    return [entry if e["field"] == field else e for e in edits] if existing else edits + [entry]
+
+
 @router.patch(
     "/projects/{project_id}/metadata",
     summary="Autosave a title/description edit at Final Review (UI v3 reduced-clicks)",
@@ -182,13 +201,21 @@ def update_metadata(request: Request, body: UpdateMetadataRequest, project_id: i
         if project is None:
             raise HttpException(task_id="", status_code=404, message=f"project {project_id} not found")
         package = dict(project.publish_package or {})
+        edits = list(project.human_edits or [])
+
         if body.title is not None:
             title_options = list(package.get("title_options") or [""])
+            original_title = title_options[0] if title_options else ""
+            edits = _record_human_edit(edits, "title", original_title, body.title)
             title_options[0] = body.title
             package["title_options"] = title_options
         if body.description is not None:
+            original_description = package.get("description", "")
+            edits = _record_human_edit(edits, "description", original_description, body.description)
             package["description"] = body.description
+
         project.publish_package = package
+        project.human_edits = edits
         session.add(project)
         session.commit()
     return utils.get_response(200, {"project_id": project_id})

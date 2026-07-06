@@ -35,6 +35,32 @@ def _run_performance_checks() -> None:
     orchestrator.run_performance_checks()
 
 
+def _run_weekly_distillation() -> None:
+    """
+    docs/DECISIONS_V3.md §3: "weekly or every 10 projects, whichever first."
+    The every-10-projects half fires deterministically right after each
+    retrospective (app/agents/orchestrator.py::_run_retrospective); this is
+    the weekly half, so a playbook still refreshes during a quiet week with
+    fewer than 10 new lessons. distill_playbook re-derives from the full
+    lesson history each time, so running it on a pair with no new lessons
+    since last week is a harmless no-op-ish re-curation, not a bug.
+    """
+    from sqlmodel import select
+
+    from app.db import session_scope
+    from app.db.models import LessonLearned
+    from app.services import playbook
+
+    with session_scope() as session:
+        pairs = set(session.exec(select(LessonLearned.agent, LessonLearned.content_type_id)).all())
+
+    for agent, content_type_id in pairs:
+        try:
+            playbook.distill_playbook(agent, content_type_id)
+        except Exception as exc:  # noqa: BLE001 - one pair's failure must not block the others
+            logger.warning(f"weekly playbook distillation failed for agent={agent} content_type={content_type_id}: {exc}")
+
+
 def start_scheduler() -> None:
     global _scheduler
     _scheduler = BackgroundScheduler()
@@ -42,6 +68,7 @@ def start_scheduler() -> None:
     # Performance tracking runs independently of the daily-batch autopilot -
     # it just checks in on already-published videos.
     _scheduler.add_job(_run_performance_checks, IntervalTrigger(hours=1), id="performance_checks")
+    _scheduler.add_job(_run_weekly_distillation, IntervalTrigger(days=7), id="weekly_playbook_distillation")
 
     if config.schedule.get("enabled", False):
         run_at = config.schedule.get("run_at", "09:00")

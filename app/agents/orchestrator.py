@@ -16,7 +16,7 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
-from app.services import originality, project_storage, storyboard
+from app.services import originality, playbook, project_storage, storyboard
 from app.services.ws_manager import broadcast_event, broadcast_status
 
 # Content types where a news story older than its freshness window, or one
@@ -464,6 +464,7 @@ def _write_brief(
         content_type_id=content_type_id,
         research_dossier=dossier,
         recent_hook_patterns=_recent_hook_patterns(content_type_id),
+        playbook_bullets=playbook.get_active_bullets("creative_director", content_type_id),
     )
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
@@ -649,6 +650,63 @@ def _run_pipeline(
         logger.exception(f"project {project_id} failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
         _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
+
+
+def _run_retrospective(project_id: int) -> None:
+    """
+    docs/DECISIONS_V3.md §3: one cheap Claude call per project, right after a
+    human approves it, reading QA reports/revision notes/human edits at Final
+    Review. Never fails the approval itself - this is purely a background
+    learning-loop step - but failures are still logged as a visible
+    AgentEvent, not swallowed.
+    """
+    try:
+        with session_scope() as session:
+            project = session.get(VideoProject, project_id)
+            qa_reports = project.qa_reports or []
+            human_edits = project.human_edits or []
+            content_type_id = project.content_type_id
+            script = (project.brief or {}).get("script", "")
+            events = session.exec(
+                select(AgentEvent)
+                .where(AgentEvent.project_id == project_id)
+                .where(AgentEvent.agent == "orchestrator")
+                .where(AgentEvent.message.contains("requested:"))
+            ).all()
+            revision_notes_history = [e.message for e in events]
+
+        from app.agents.retrospective import Retrospective
+
+        lessons = Retrospective(project_id).run(
+            qa_reports=qa_reports,
+            human_edits=human_edits,
+            revision_notes_history=revision_notes_history,
+            script=script,
+            content_type_id=content_type_id,
+        )
+        if not lessons:
+            _log_event(project_id, "Retrospective found no actionable lessons for this project")
+            return
+
+        playbook.record_lessons(project_id, content_type_id, lessons)
+        _log_event(project_id, f"Retrospective recorded {len(lessons)} lesson(s)")
+
+        distilled_for = set()
+        for lesson in lessons:
+            key = (lesson.agent, content_type_id)
+            if key in distilled_for:
+                continue
+            distilled_for.add(key)
+            if playbook.is_distillation_due(lesson.agent, content_type_id):
+                new_version = playbook.distill_playbook(lesson.agent, content_type_id)
+                if new_version:
+                    _log_event(
+                        project_id,
+                        f"Distilled a new playbook (v{new_version.version}) for {lesson.agent}/{content_type_id or 'any'}",
+                    )
+    except Exception as exc:  # noqa: BLE001 - must never affect the approval that triggered it
+        logger.exception(f"project {project_id} retrospective failed")
+        _log_event(project_id, f"Retrospective failed (approval is unaffected): {exc}", type_="error")
 
 
 def _record_clip_index(project_id: int, final_state: dict) -> None:
@@ -845,6 +903,7 @@ def approve_and_publish(project_id: int, platforms: List[str], thumbnail_path: O
 
     _set_status(project_id, ProjectStatus.APPROVED)
     _materialize_project_storage(project_id)  # mirrors the new status into project.json
+    threading.Thread(target=_run_retrospective, args=(project_id,), daemon=True).start()
 
     if not config.features.get("publishing_enabled", False):
         # Publishing is on hold (see [features].publishing_enabled in

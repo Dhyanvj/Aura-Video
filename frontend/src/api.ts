@@ -199,6 +199,23 @@ export interface Analytics {
   videos: AnalyticsVideo[];
 }
 
+export interface PlaybookBullet {
+  text: string;
+  enabled: boolean;
+  source_lesson_ids?: number[];
+  flagged_for_review?: boolean;
+}
+
+export interface PlaybookT {
+  id: number;
+  agent: string;
+  content_type_id: string | null;
+  version: number;
+  bullets: PlaybookBullet[];
+  is_active: boolean;
+  created_at: string;
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -241,6 +258,20 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(partial),
     }),
+  listPlaybooks: () => apiFetch<{ playbooks: PlaybookT[] }>("/api/v1/playbooks").then((r) => r.playbooks),
+  getPlaybookVersions: (agent: string, contentTypeId: string | null) =>
+    apiFetch<{ versions: PlaybookT[] }>(
+      `/api/v1/playbooks/versions?agent=${encodeURIComponent(agent)}${
+        contentTypeId ? `&content_type_id=${encodeURIComponent(contentTypeId)}` : ""
+      }`,
+    ).then((r) => r.versions),
+  updatePlaybookBullet: (playbookId: number, bulletIndex: number, partial: { enabled?: boolean; text?: string }) =>
+    apiFetch<PlaybookT>(`/api/v1/playbooks/${playbookId}/bullets/${bulletIndex}`, {
+      method: "PATCH",
+      body: JSON.stringify(partial),
+    }),
+  rollbackPlaybook: (playbookId: number) =>
+    apiFetch<PlaybookT>(`/api/v1/playbooks/${playbookId}/rollback`, { method: "POST" }),
   getSettings: () => apiFetch<Settings>("/api/v1/settings"),
   updateSettings: (partial: Partial<Settings>) =>
     apiFetch<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(partial) }),

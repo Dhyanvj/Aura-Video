@@ -187,5 +187,30 @@ class TestCreativeDirectorHookVariety(unittest.TestCase):
         self.assertEqual(brief.opening_line, "9 out of 10 people get this wrong.")
 
 
+class TestCreativeDirectorPlaybookInjection(unittest.TestCase):
+    """docs/DECISIONS_V3.md §3: distilled playbook bullets are injected into the prompt, never raw lessons."""
+
+    def test_playbook_bullets_are_injected_into_the_system_prompt(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(
+                topic="whales",
+                niche="ocean",
+                playbook_bullets=["Always name a concrete visual subject.", "Avoid generic macro shots."],
+            )
+
+        _, kwargs = mock_call.call_args
+        self.assertIn("Always name a concrete visual subject.", kwargs["system"])
+        self.assertIn("Avoid generic macro shots.", kwargs["system"])
+
+    def test_no_playbook_omits_the_lessons_section(self):
+        director = CreativeDirector(project_id=None)
+        with patch.object(director, "call_json", return_value=_fake_brief()) as mock_call:
+            director.write(topic="whales", niche="ocean", playbook_bullets=None)
+
+        _, kwargs = mock_call.call_args
+        self.assertNotIn("Lessons from past projects", kwargs["system"])
+
+
 if __name__ == "__main__":
     unittest.main()

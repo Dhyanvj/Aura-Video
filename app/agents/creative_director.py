@@ -136,6 +136,7 @@ class CreativeDirector(BaseAgent):
         content_type_id: Optional[str] = None,
         research_dossier: Optional[ResearchDossier] = None,
         recent_hook_patterns: Optional[List[str]] = None,
+        playbook_bullets: Optional[List[str]] = None,
     ) -> CreativeBrief:
         payload = {
             "topic": topic,
@@ -150,6 +151,14 @@ class CreativeDirector(BaseAgent):
         if recent_hook_patterns:
             system += _HOOK_VARIETY_INSTRUCTION.format(
                 count=len(recent_hook_patterns), patterns=", ".join(recent_hook_patterns)
+            )
+        if playbook_bullets:
+            # docs/DECISIONS_V3.md §3: distilled, human-curated lessons from
+            # past projects' retrospectives - never raw lessons, always this
+            # bounded (<=15 bullets), versioned, human-editable playbook.
+            bullet_list = "\n".join(f"- {b}" for b in playbook_bullets)
+            system += (
+                f"\n\nLessons from past projects of this content type (follow these):\n{bullet_list}"
             )
         if research_dossier is not None:
             payload["verified_research"] = research_dossier.model_dump()
