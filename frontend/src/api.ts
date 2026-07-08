@@ -103,6 +103,17 @@ export interface Project {
   events?: AgentEventT[];
 }
 
+export interface RecycleBinItem {
+  id: number;
+  topic: string | null;
+  status_before_delete: string | null;
+  deleted_at: string;
+  days_remaining: number | null;
+  size_bytes: number;
+  has_thumbnail: boolean;
+  was_published: boolean;
+}
+
 export type QualityPreset = "budget" | "standard" | "cinematic";
 
 export interface ContentTypeTemplate {
@@ -169,6 +180,7 @@ export interface Settings {
   run_at: string;
   default_platforms: string[];
   monthly_budget_usd: number;
+  recycle_bin_retention_days: number;
   anthropic_configured: boolean;
   youtube_configured: boolean;
   upload_post_configured: boolean;
@@ -258,6 +270,21 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(partial),
     }),
+  deleteProject: (id: number, permanent = false) =>
+    apiFetch<{ project_id: number; permanent: boolean; warning?: string | null }>(`/api/v1/projects/${id}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ permanent }),
+    }),
+  bulkDeleteProjects: (projectIds: number[], permanent = false) =>
+    apiFetch<{ deleted: unknown[]; errors: { project_id: number; error: string }[] }>(
+      "/api/v1/projects/bulk-delete",
+      { method: "POST", body: JSON.stringify({ project_ids: projectIds, permanent }) },
+    ),
+  listRecycleBin: () => apiFetch<{ items: RecycleBinItem[] }>("/api/v1/recycle-bin").then((r) => r.items),
+  restoreProject: (id: number) =>
+    apiFetch<{ project_id: number; status: string }>(`/api/v1/recycle-bin/${id}/restore`, { method: "POST" }),
+  purgeProject: (id: number) =>
+    apiFetch<{ project_id: number; permanent: boolean }>(`/api/v1/recycle-bin/${id}/purge`, { method: "POST" }),
   listPlaybooks: () => apiFetch<{ playbooks: PlaybookT[] }>("/api/v1/playbooks").then((r) => r.playbooks),
   getPlaybookVersions: (agent: string, contentTypeId: string | null) =>
     apiFetch<{ versions: PlaybookT[] }>(

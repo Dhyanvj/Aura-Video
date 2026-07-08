@@ -159,6 +159,7 @@ def save_config():
         _cfg["trends"] = trends
         _cfg["schedule"] = schedule
         _cfg["features"] = features
+        _cfg["storage"] = storage
         f.write(toml.dumps(_cfg))
 
 
@@ -180,6 +181,9 @@ schedule = _cfg.get("schedule", {})
 # stay in place, just short-circuited, so re-enabling later is a config
 # change rather than a rebuild.
 features = _cfg.get("features", {"publishing_enabled": False})
+# Recycle Bin (docs/DECISIONS_V3.md): recycle_bin_retention_days=0 means
+# "skip the bin, hard-delete immediately" (project_deletion.delete_project).
+storage = _cfg.get("storage", {"recycle_bin_retention_days": 7})
 ui = _cfg.get(
     "ui",
     {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, ContentTypeTemplate, PlaybookT, Settings as SettingsT } from "../api";
 
 const PLATFORMS = ["tiktok", "instagram", "youtube"];
@@ -391,6 +392,23 @@ export default function Settings() {
             </label>
           ))}
         </div>
+      </section>
+
+      <section className="mb-6 rounded-lg border border-border bg-panel p-4">
+        <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Storage</h2>
+        <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+          Recycle Bin retention (days, 0 = skip the bin and delete immediately)
+        </label>
+        <input
+          type="number"
+          min={0}
+          defaultValue={settings.recycle_bin_retention_days}
+          onBlur={(e) => save({ recycle_bin_retention_days: Number(e.target.value) })}
+          className="mb-3 w-full rounded border border-border bg-panel2 px-3 py-2 text-sm text-slate-900 dark:text-slate-100"
+        />
+        <Link to="/recycle-bin" className="text-xs text-accent hover:underline">
+          Open Recycle Bin
+        </Link>
       </section>
 
       <section className="mb-6 rounded-lg border border-border bg-panel p-4">

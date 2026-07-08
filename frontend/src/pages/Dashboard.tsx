@@ -124,7 +124,7 @@ export default function Dashboard() {
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {recent.map((p) => (
-              <ProjectCard key={p.id} project={p} />
+              <ProjectCard key={p.id} project={p} onDeleted={refresh} />
             ))}
             {recent.length === 0 && <p className="text-sm text-slate-500 dark:text-slate-400">No projects yet.</p>}
           </div>

@@ -501,6 +501,14 @@ enabled = false
 videos_per_day = 1
 run_at = "09:00"
 
+[storage]
+# Recycle Bin (deleting a project): how many days a soft-deleted project
+# stays recoverable before the scheduled purge job removes it permanently -
+# folder, DB rows, and (if it was never published) its originality
+# fingerprints. 0 skips the bin entirely: delete becomes an immediate,
+# irreversible permanent delete.
+recycle_bin_retention_days = 7
+
 [features]
 # Master switch for the entire publish path (Publisher.publish(), the
 # approval-gate publish thread, any scheduler auto-upload). Publishing is on

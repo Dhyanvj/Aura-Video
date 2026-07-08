@@ -20,6 +20,11 @@ class ProjectStatus(str, Enum):
     RESEARCH_READY = "RESEARCH_READY"
     SCRIPTING = "SCRIPTING"
     SCRIPT_READY = "SCRIPT_READY"
+    # v3 script-approval gate (docs/DECISIONS_V3.md): the human checkpoint
+    # between a script existing and any production spend (TTS/downloads/
+    # render) in manual approval mode. Automatic mode logs an auto-approval
+    # AgentEvent and skips straight through instead of pausing here.
+    AWAITING_SCRIPT_APPROVAL = "AWAITING_SCRIPT_APPROVAL"
     PRODUCING = "PRODUCING"
     RENDERED = "RENDERED"
     QA_REVIEW = "QA_REVIEW"
@@ -32,6 +37,12 @@ class ProjectStatus(str, Enum):
     ARCHIVED = "ARCHIVED"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
+    # Cooperative-cancellation terminal state (Recycle Bin: deleting an
+    # in-flight project cancels it first - see app/services/cancellation.py).
+    CANCELLED = "CANCELLED"
+    # Soft-delete state (Recycle Bin). status_before_delete + deleted_at on
+    # VideoProject carry what's needed to restore or purge it later.
+    DELETED = "DELETED"
 
 
 class VideoProject(SQLModel, table=True):
@@ -89,6 +100,15 @@ class VideoProject(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     published_at: Optional[datetime] = None
+
+    # v3 Recycle Bin (docs/DECISIONS_V3.md): soft-delete fields. deleted_at
+    # set means "in the bin"; status_before_delete is what Restore returns
+    # the project to. cancel_requested is the cooperative-cancellation signal
+    # checked at pipeline checkpoints (app/services/cancellation.py) so an
+    # in-flight project is cancelled cleanly before it's soft-deleted.
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
+    status_before_delete: Optional[str] = None
+    cancel_requested: bool = Field(default=False)
 
 
 class Series(SQLModel, table=True):

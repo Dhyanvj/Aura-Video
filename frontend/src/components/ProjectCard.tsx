@@ -1,17 +1,94 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Project } from "../api";
+import { api, Project } from "../api";
 import StatusBadge from "./StatusBadge";
 
-export default function ProjectCard({ project }: { project: Project }) {
+interface ProjectCardProps {
+  project: Project;
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: number) => void;
+  onDeleted?: () => void;
+}
+
+export default function ProjectCard({ project, selectable, selected, onToggleSelect, onDeleted }: ProjectCardProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  const deleteProject = async (permanent: boolean) => {
+    setMenuOpen(false);
+    const publishedWarning =
+      project.status === "PUBLISHED" || project.status === "TRACKING"
+        ? "\n\nThis project is published - performance tracking for it will stop."
+        : "";
+    const confirmed = permanent
+      ? window.confirm(
+          `Permanently delete "${project.topic || `#${project.id}`}"? This cannot be undone - the folder and all DB records are removed.${publishedWarning}`,
+        )
+      : window.confirm(`Move "${project.topic || `#${project.id}`}" to the Recycle Bin? You can restore it later.${publishedWarning}`);
+    if (!confirmed) return;
+    try {
+      await api.deleteProject(project.id, permanent);
+      onDeleted?.();
+    } catch (e) {
+      window.alert(String(e));
+    }
+  };
+
   return (
-    <Link
-      to={`/projects/${project.id}`}
-      className="block rounded-lg border border-border bg-panel2 p-3 transition-colors hover:border-accent"
+    <div
+      className={`relative block rounded-lg border p-3 transition-colors ${
+        selected ? "border-accent bg-panel2" : "border-border bg-panel2 hover:border-accent"
+      }`}
     >
       <div className="mb-2 flex items-start justify-between gap-2">
-        <span className="text-sm font-medium leading-snug text-slate-900 dark:text-slate-100">
-          {project.topic || "(topic pending)"}
-        </span>
+        {selectable && (
+          <input
+            type="checkbox"
+            checked={!!selected}
+            onChange={() => onToggleSelect?.(project.id)}
+            onClick={(e) => e.stopPropagation()}
+            className="mt-0.5 shrink-0"
+          />
+        )}
+        <Link to={`/projects/${project.id}`} className="min-w-0 flex-1">
+          <span className="text-sm font-medium leading-snug text-slate-900 dark:text-slate-100">
+            {project.topic || "(topic pending)"}
+          </span>
+        </Link>
+        <div className="relative shrink-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMenuOpen((v) => !v);
+            }}
+            aria-label="Project actions"
+            className="rounded px-1.5 py-0.5 text-slate-500 hover:bg-panel hover:text-slate-900 dark:hover:text-white"
+          >
+            &#8942;
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 top-6 z-10 w-40 rounded border border-border bg-panel shadow-lg">
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteProject(false);
+                }}
+                className="block w-full px-3 py-2 text-left text-xs text-slate-700 hover:bg-panel2 dark:text-slate-300"
+              >
+                Move to Recycle Bin
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteProject(true);
+                }}
+                className="block w-full px-3 py-2 text-left text-xs text-rose-600 hover:bg-panel2 dark:text-rose-400"
+              >
+                Delete Permanently
+              </button>
+            </div>
+          )}
+        </div>
       </div>
       <div className="mb-2 flex items-center justify-between">
         <StatusBadge status={project.status} />
@@ -40,6 +117,6 @@ export default function ProjectCard({ project }: { project: Project }) {
           {project.failure_reason}
         </div>
       )}
-    </Link>
+    </div>
   );
 }

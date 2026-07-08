@@ -21,6 +21,9 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "hook_pattern": "TEXT",
     "opening_line": "TEXT",
     "human_edits": "JSON",
+    "deleted_at": "TIMESTAMP",
+    "status_before_delete": "TEXT",
+    "cancel_requested": "BOOLEAN NOT NULL DEFAULT 0",
 }
 _CONTENTTYPETEMPLATE_NEW_COLUMNS = {
     "description": "TEXT NOT NULL DEFAULT ''",

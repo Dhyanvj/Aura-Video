@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { api, Project, taskFileUrl } from "../api";
 import { useLiveUpdates } from "../ws";
 import StatusBadge from "../components/StatusBadge";
@@ -7,6 +7,7 @@ import ProjectTimeline from "../components/ProjectTimeline";
 
 export default function ProjectDetail() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const projectId = Number(id);
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +29,25 @@ export default function ProjectDetail() {
 
   const videoUrl = taskFileUrl(project.task_id, project.video_path);
 
+  const deleteProject = async (permanent: boolean) => {
+    const publishedWarning =
+      project.status === "PUBLISHED" || project.status === "TRACKING"
+        ? "\n\nThis project is published - performance tracking for it will stop."
+        : "";
+    const confirmed = permanent
+      ? window.confirm(
+          `Permanently delete "${project.topic || `#${project.id}`}"? This cannot be undone.${publishedWarning}`,
+        )
+      : window.confirm(`Move "${project.topic || `#${project.id}`}" to the Recycle Bin? You can restore it later.${publishedWarning}`);
+    if (!confirmed) return;
+    try {
+      await api.deleteProject(project.id, permanent);
+      navigate("/pipeline");
+    } catch (e) {
+      window.alert(String(e));
+    }
+  };
+
   return (
     <div>
       <Link
@@ -48,6 +68,18 @@ export default function ProjectDetail() {
           <StatusBadge status={project.status} />
           <span>${project.cost_usd.toFixed(3)}</span>
           <span>revision {project.revision_count}</span>
+          <button
+            onClick={() => deleteProject(false)}
+            className="rounded border border-border px-2 py-1 text-xs text-slate-600 hover:border-amber-500 hover:text-amber-500 dark:text-slate-300"
+          >
+            Move to Recycle Bin
+          </button>
+          <button
+            onClick={() => deleteProject(true)}
+            className="rounded border border-border px-2 py-1 text-xs text-rose-600 hover:border-rose-500 dark:text-rose-400"
+          >
+            Delete Permanently
+          </button>
         </div>
       </div>
 

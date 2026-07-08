@@ -8,6 +8,7 @@ from app.db import session_scope
 from app.db.models import AgentEvent, VideoProject
 from app.models import const
 from app.models.schema import VideoParams
+from app.services import cancellation
 from app.services import state as sm
 from app.services import task as task_service
 from app.services.ws_manager import broadcast_event
@@ -87,6 +88,15 @@ class Producer:
                 break
             time.sleep(2)
         thread.join()
+
+        # Cancellation can't interrupt an in-progress render (no hook into
+        # task_service.start for that) - "wait for the current stage to
+        # stop" means wait for the thread we just joined to actually finish,
+        # then refuse to treat its output as a usable render rather than
+        # force-killing it mid-encode.
+        if cancellation.is_cancel_requested(self.project_id):
+            self.log_event("output", message=f"Render for task {task_id} finished after a cancellation request; discarding")
+            raise cancellation.PipelineCancelled(f"project {self.project_id} cancelled during render")
 
         final_state = sm.state.get_task(task_id) or {}
         if final_state.get("state") == const.TASK_STATE_FAILED:

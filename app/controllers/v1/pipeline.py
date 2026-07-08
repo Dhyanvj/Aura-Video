@@ -12,9 +12,9 @@ from app.config import config
 from app.controllers import base
 from app.controllers.v1.base import new_router
 from app.db import session_scope
-from app.db.models import AgentEvent, ContentTypeTemplate, VideoProject
+from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, VideoProject
 from app.models.exception import HttpException
-from app.services import project_storage
+from app.services import project_deletion, project_storage
 from app.utils import file_security, utils
 
 router = new_router()
@@ -221,10 +221,14 @@ def update_metadata(request: Request, body: UpdateMetadataRequest, project_id: i
     return utils.get_response(200, {"project_id": project_id})
 
 
-@router.get("/projects", summary="List all projects")
+@router.get("/projects", summary="List all projects (excludes the Recycle Bin)")
 def get_all_projects(request: Request):
     with session_scope() as session:
-        projects = session.exec(select(VideoProject).order_by(VideoProject.created_at.desc())).all()
+        projects = session.exec(
+            select(VideoProject)
+            .where(VideoProject.status != ProjectStatus.DELETED.value)
+            .order_by(VideoProject.created_at.desc())
+        ).all()
         data = [_project_summary(p) for p in projects]
     return utils.get_response(200, {"projects": data})
 
@@ -311,3 +315,63 @@ def _event_summary(event: AgentEvent) -> dict:
         "cost_usd": event.cost_usd,
         "created_at": event.created_at.isoformat(),
     }
+
+
+class DeleteProjectRequest(BaseModel):
+    permanent: bool = False
+
+
+class BulkDeleteRequest(BaseModel):
+    project_ids: List[int]
+    permanent: bool = False
+
+
+def _deletion_error_response(exc: Exception) -> HttpException:
+    if isinstance(exc, project_deletion.ProjectNotFoundError):
+        return HttpException(task_id="", status_code=404, message=str(exc))
+    if isinstance(exc, (project_deletion.ProjectAlreadyDeletedError, project_deletion.ProjectNotDeletedError)):
+        return HttpException(task_id="", status_code=409, message=str(exc))
+    if isinstance(exc, TimeoutError):
+        return HttpException(task_id="", status_code=409, message=str(exc))
+    return HttpException(task_id="", status_code=400, message=str(exc))
+
+
+@router.post(
+    "/projects/{project_id}/delete",
+    summary="Soft-delete a project to the Recycle Bin (or permanently delete it)",
+)
+def delete_project(request: Request, body: DeleteProjectRequest, project_id: int = Path(...)):
+    try:
+        result = project_deletion.delete_project(project_id, permanent=body.permanent)
+    except Exception as exc:  # noqa: BLE001 - narrowed to the right HTTP status below
+        raise _deletion_error_response(exc)
+    return utils.get_response(200, result)
+
+
+@router.post("/projects/bulk-delete", summary="Delete multiple projects at once (e.g. clearing out failed runs)")
+def bulk_delete_projects(request: Request, body: BulkDeleteRequest):
+    result = project_deletion.bulk_delete(body.project_ids, permanent=body.permanent)
+    return utils.get_response(200, result)
+
+
+@router.get("/recycle-bin", summary="List soft-deleted projects")
+def list_recycle_bin(request: Request):
+    return utils.get_response(200, {"items": project_deletion.list_recycle_bin()})
+
+
+@router.post("/recycle-bin/{project_id}/restore", summary="Restore a project from the Recycle Bin")
+def restore_project(request: Request, project_id: int = Path(...)):
+    try:
+        result = project_deletion.restore_project(project_id)
+    except Exception as exc:  # noqa: BLE001 - narrowed to the right HTTP status below
+        raise _deletion_error_response(exc)
+    return utils.get_response(200, result)
+
+
+@router.post("/recycle-bin/{project_id}/purge", summary="Permanently delete a project already in the Recycle Bin")
+def purge_project(request: Request, project_id: int = Path(...)):
+    try:
+        result = project_deletion.purge_project(project_id)
+    except Exception as exc:  # noqa: BLE001 - narrowed to the right HTTP status below
+        raise _deletion_error_response(exc)
+    return utils.get_response(200, result)

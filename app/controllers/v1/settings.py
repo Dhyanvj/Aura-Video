@@ -21,6 +21,7 @@ class UpdateSettingsRequest(BaseModel):
     run_at: Optional[str] = None
     default_platforms: Optional[List[str]] = None
     monthly_budget_usd: Optional[float] = None
+    recycle_bin_retention_days: Optional[int] = None
 
 
 @router.get("/settings", summary="Get studio settings (secrets are never returned)")
@@ -46,6 +47,8 @@ def update_settings(request: Request, body: UpdateSettingsRequest):
         config.app["upload_post_platforms"] = body.default_platforms
     if body.monthly_budget_usd is not None:
         config.agents["monthly_budget_usd"] = body.monthly_budget_usd
+    if body.recycle_bin_retention_days is not None:
+        config.storage["recycle_bin_retention_days"] = body.recycle_bin_retention_days
 
     config.save_config()
     scheduler.stop_scheduler()
@@ -64,6 +67,7 @@ def _current_settings() -> dict:
         "run_at": config.schedule.get("run_at", "09:00"),
         "default_platforms": config.app.get("upload_post_platforms", []),
         "monthly_budget_usd": config.agents.get("monthly_budget_usd", 0),
+        "recycle_bin_retention_days": config.storage.get("recycle_bin_retention_days", 7),
         "anthropic_configured": bool(config.agents.get("anthropic_api_key")),
         "youtube_configured": bool(config.trends.get("youtube_api_key")),
         "upload_post_configured": bool(

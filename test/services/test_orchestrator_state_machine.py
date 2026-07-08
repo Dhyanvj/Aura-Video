@@ -16,9 +16,9 @@ from app.agents.researcher import Researcher
 from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport, ResearchDossier, TrendIdea, TrendReport
 from app.agents.trend_scout import TrendScout
 from app.db import session_scope
-from app.db.models import ProjectStatus, VideoProject
+from app.db.models import AgentEvent, ProjectStatus, VideoProject
 from app.models import const
-from app.services import state as sm
+from app.services import cancellation, state as sm
 from test.services._test_helpers import IsolatedStorageDirMixin
 
 
@@ -636,6 +636,107 @@ class TestOrchestratorResearchWiring(IsolatedStorageDirMixin, unittest.TestCase)
             session.commit()
 
         self.assertEqual(orchestrator._recent_topics(content_type_id="motivational", series_id=series_id), ["series a topic"])
+
+
+class TestCancellationCheckpoints(IsolatedStorageDirMixin, unittest.TestCase):
+    """
+    Recycle Bin (docs/DECISIONS_V3.md): deleting an in-flight project must
+    cancel it cleanly first. These exercise the cooperative-cancellation
+    checkpoints wired into the real orchestrator/producer pipeline (not
+    app/services/project_deletion.py, which is covered directly in
+    test_project_deletion.py) - request_cancel() during a stage, then assert
+    the pipeline stops at CANCELLED rather than continuing to spend on
+    production, and never falls through to FAILED.
+    """
+
+    def setUp(self):
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+        self._start_isolated_storage_dir()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        self._stop_isolated_storage_dir()
+
+    def _get_project(self, project_id: int) -> VideoProject:
+        with session_scope() as session:
+            return session.get(VideoProject, project_id)
+
+    def _wait_for_status(self, project_id: int, terminal_statuses: set, timeout: float = 30.0):
+        import time
+
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            status = self._get_project(project_id).status
+            if status in terminal_statuses:
+                return status
+            time.sleep(0.1)
+        self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
+
+    def test_cancellation_requested_during_scripting_stops_before_any_production_spend(self):
+        project_holder = {}
+
+        def _write_and_request_cancel(*args, **kwargs):
+            cancellation.request_cancel(project_holder["id"])
+            return _fake_brief()
+
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", side_effect=_write_and_request_cancel
+        ), patch("app.agents.producer.task_service.start") as mock_start:
+            project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
+            project_holder["id"] = project_id
+            self._wait_for_status(project_id, {ProjectStatus.CANCELLED.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.CANCELLED.value)
+        mock_start.assert_not_called()  # zero production spend past the cancellation point
+        with session_scope() as session:
+            from sqlmodel import select
+
+            events = session.exec(select(AgentEvent).where(AgentEvent.project_id == project_id)).all()
+        self.assertTrue(any("Cancelled by user request" in e.message for e in events))
+
+    def test_cancellation_requested_during_render_stops_at_cancelled_not_failed(self):
+        project_holder = {}
+
+        def _render_and_request_cancel(task_id, params, stop_at="video"):
+            cancellation.request_cancel(project_holder["id"])
+            sm.state.update_task(task_id, state=const.TASK_STATE_COMPLETE, progress=100, videos=["/tmp/x.mp4"])
+
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch("app.agents.producer.task_service.start", side_effect=_render_and_request_cancel):
+            project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
+            project_holder["id"] = project_id
+            self._wait_for_status(project_id, {ProjectStatus.CANCELLED.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.CANCELLED.value)
+        self.assertEqual(project.qa_reports, None)  # never reached QA - cancelled before the render was trusted
+
+    def test_retry_after_cancellation_clears_the_flag_and_reruns(self):
+        with session_scope() as session:
+            project = VideoProject(
+                status=ProjectStatus.CANCELLED.value, topic="t", niche="n", cancel_requested=True
+            )
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            project_id = project.id
+
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch.object(orchestrator, "_produce_and_review"):
+            orchestrator.retry_failed_project(project_id)
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.SCRIPT_READY.value)
+        self.assertFalse(project.cancel_requested)
 
 
 if __name__ == "__main__":

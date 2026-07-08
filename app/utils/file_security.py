@@ -33,3 +33,28 @@ def resolve_path_within_directory(
         raise ValueError("file does not exist")
 
     return resolved_path
+
+
+def resolve_directory_for_deletion(root_dir: str, relative_dir: str) -> str:
+    """
+    Resolves a project's own folder for a filesystem delete (Recycle Bin
+    permanent purge, app/services/project_deletion.py). Deliberately
+    stricter than resolve_path_within_directory: the caller must always pass
+    a directory (not attacker-controlled - always project.storage_path/
+    task_id from the DB, never a client-supplied path), and this additionally
+    refuses to ever return root_dir itself, so a coding mistake that resolves
+    an empty/"."/".." relative path can never come back as "delete the whole
+    projects root".
+
+    os.path.realpath() resolves symlinks in every path component, so a
+    project folder (or an ancestor of it) that is itself a symlink pointing
+    outside root_dir is caught by the same commonpath check that catches
+    ordinary ".." traversal - there's no separate symlink-specific branch
+    needed, but it's covered explicitly by tests.
+    """
+    resolved = resolve_path_within_directory(root_dir, relative_dir, require_file=False)
+    if not os.path.isdir(resolved):
+        raise ValueError("resolved path is not a directory")
+    if os.path.realpath(resolved) == os.path.realpath(root_dir):
+        raise ValueError("refusing to delete the storage root itself")
+    return resolved

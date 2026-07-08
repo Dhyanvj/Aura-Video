@@ -9,6 +9,7 @@ import SeriesPage from "./pages/SeriesPage";
 import Trends from "./pages/Trends";
 import Analytics from "./pages/Analytics";
 import Settings from "./pages/Settings";
+import RecycleBin from "./pages/RecycleBin";
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="/trends" element={<Trends />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="/recycle-bin" element={<RecycleBin />} />
         </Routes>
       </main>
     </div>

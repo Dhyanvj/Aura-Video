@@ -35,6 +35,14 @@ def _run_performance_checks() -> None:
     orchestrator.run_performance_checks()
 
 
+def _run_recycle_bin_purge() -> None:
+    from app.services import project_deletion  # local import: avoid a circular import at module load time
+
+    purged = project_deletion.purge_expired()
+    if purged:
+        logger.info(f"scheduler: Recycle Bin purge removed {purged} project(s) past retention")
+
+
 def _run_weekly_distillation() -> None:
     """
     docs/DECISIONS_V3.md §3: "weekly or every 10 projects, whichever first."
@@ -69,6 +77,7 @@ def start_scheduler() -> None:
     # it just checks in on already-published videos.
     _scheduler.add_job(_run_performance_checks, IntervalTrigger(hours=1), id="performance_checks")
     _scheduler.add_job(_run_weekly_distillation, IntervalTrigger(days=7), id="weekly_playbook_distillation")
+    _scheduler.add_job(_run_recycle_bin_purge, IntervalTrigger(hours=1), id="recycle_bin_purge")
 
     if config.schedule.get("enabled", False):
         run_at = config.schedule.get("run_at", "09:00")

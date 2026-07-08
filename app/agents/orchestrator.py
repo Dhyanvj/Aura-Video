@@ -16,7 +16,8 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
-from app.services import originality, playbook, project_storage, storyboard
+from app.services import cancellation, originality, playbook, project_storage, storyboard
+from app.services.cancellation import PipelineCancelled
 from app.services.ws_manager import broadcast_event, broadcast_status
 
 # Content types where a news story older than its freshness window, or one
@@ -60,6 +61,11 @@ def _set_status(project_id: int, status: ProjectStatus, **fields) -> None:
         session.add(project)
         session.commit()
     broadcast_status(project_id, status.value)
+
+
+def _mark_cancelled(project_id: int) -> None:
+    _set_status(project_id, ProjectStatus.CANCELLED)
+    _log_event(project_id, "Cancelled by user request")
 
 
 def _max_revisions() -> int:
@@ -304,6 +310,7 @@ def start_auto_trend_project(
 
 def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None:
     try:
+        cancellation.raise_if_cancelled(project_id)
         if not agent_base.is_configured():
             raise agent_base.AgentNotConfiguredError(
                 "agents.anthropic_api_key is not configured; cannot run the Trend Scout"
@@ -421,8 +428,11 @@ def _run_auto_trend_pipeline(project_id: int, niche: str, audience: str) -> None
             dossier = _dossier_from_trend_idea(best)
             _store_research_evidence(project_id, dossier)
 
+        cancellation.raise_if_cancelled(project_id)
         _set_status(project_id, ProjectStatus.IDEA_READY, topic=best.title)
         _run_pipeline(project_id, best.title, niche, dossier=dossier)
+    except PipelineCancelled:
+        _mark_cancelled(project_id)
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
         logger.exception(f"project {project_id} trend scouting failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
@@ -588,6 +598,7 @@ def _run_pipeline(
     dossier: Optional[ResearchDossier] = None,
 ) -> None:
     try:
+        cancellation.raise_if_cancelled(project_id)
         if not agent_base.is_configured():
             raise agent_base.AgentNotConfiguredError(
                 "agents.anthropic_api_key is not configured; cannot run the Creative Director"
@@ -650,12 +661,16 @@ def _run_pipeline(
                 return
             originality.commit_topic(project_id, content_type_id, series_id, topic, dossier)
 
+        cancellation.raise_if_cancelled(project_id)
         _set_status(project_id, ProjectStatus.SCRIPTING, topic=topic)
         brief = _write_brief(project_id, topic, niche, revision_notes, dossier)
         _set_status(project_id, ProjectStatus.SCRIPT_READY)
         _log_event(project_id, "Creative Director produced a script and brief")
 
+        cancellation.raise_if_cancelled(project_id)
         _produce_and_review(project_id, topic, niche, brief, dossier)
+    except PipelineCancelled:
+        _mark_cancelled(project_id)
     except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
         logger.exception(f"project {project_id} failed")
         _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
@@ -762,10 +777,12 @@ def _produce_and_review(
     calls back into this function rather than _run_pipeline so it never
     re-runs _write_brief.
     """
+    cancellation.raise_if_cancelled(project_id)
     _set_status(project_id, ProjectStatus.PRODUCING)
     params = _video_params_from_brief(project_id, topic, brief)
     producer = Producer(project_id)
     final_state = producer.run(params)
+    cancellation.raise_if_cancelled(project_id)
     _set_status(project_id, ProjectStatus.RENDERED)
     _record_clip_index(project_id, final_state)
     _materialize_project_storage(project_id)
@@ -1002,20 +1019,28 @@ def _run_publish(
         _log_event(project_id, f"Publish failed: {exc}", type_="error")
 
 
+_RETRYABLE_STATUSES = {ProjectStatus.FAILED.value, ProjectStatus.CANCELLED.value}
+
+
 def retry_failed_project(project_id: int) -> None:
     """
     Plain retry with no revision notes, for infra-type failures (e.g. a
-    transient render error) rather than content feedback. Does not consume a
-    revision slot.
+    transient render error) or a prior cancellation, rather than content
+    feedback. Does not consume a revision slot.
     """
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         if project is None:
             raise ValueError(f"project {project_id} not found")
-        if project.status != ProjectStatus.FAILED.value:
-            raise PermissionError(f"project {project_id} is not FAILED (status={project.status})")
+        if project.status not in _RETRYABLE_STATUSES:
+            raise PermissionError(f"project {project_id} is not FAILED or CANCELLED (status={project.status})")
         topic = project.topic
         niche = project.niche or ""
+        # Clear a prior cancellation request - otherwise the very first
+        # checkpoint in the retried run would immediately cancel it again.
+        project.cancel_requested = False
+        session.add(project)
+        session.commit()
 
     _set_status(project_id, ProjectStatus.SCRIPTING, failure_reason=None)
     _log_event(project_id, "Retrying after failure")
