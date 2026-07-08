@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, Project, Settings } from "../api";
+import { api, Project } from "../api";
 import { useLiveUpdates } from "../ws";
 import ProjectCard from "../components/ProjectCard";
 import ProjectFilters, { applyProjectFilters, EMPTY_FILTERS, ProjectFilterState } from "../components/ProjectFilters";
@@ -21,7 +21,6 @@ const COLUMNS: { key: string; label: string; statuses: string[] }[] = [
 export default function PipelineBoard() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [settings, setSettings] = useState<Settings | null>(null);
   const [showNewForm, setShowNewForm] = useState(false);
   const [topic, setTopic] = useState("");
   const [niche, setNiche] = useState("");
@@ -54,10 +53,7 @@ export default function PipelineBoard() {
     refresh();
   };
 
-  useEffect(() => {
-    refresh();
-    api.getSettings().then(setSettings).catch(() => undefined);
-  }, []);
+  useEffect(refresh, []);
 
   useLiveUpdates(
     () => refresh(),
@@ -79,13 +75,6 @@ export default function PipelineBoard() {
     }
   };
 
-  const toggleAutopilot = async () => {
-    if (!settings) return;
-    const next = settings.autopilot_level === "manual" ? "semi" : "manual";
-    const updated = await api.updateSettings({ autopilot_level: next });
-    setSettings(updated);
-  };
-
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
@@ -94,15 +83,6 @@ export default function PipelineBoard() {
           <p className="text-sm text-slate-500 dark:text-slate-400">Every project, live, from idea to published post.</p>
         </div>
         <div className="flex items-center gap-3">
-          {settings && (
-            <button
-              onClick={toggleAutopilot}
-              className="rounded border border-border bg-panel2 px-3 py-1.5 text-sm text-slate-800 dark:text-slate-200 hover:border-accent"
-              title="manual: approve topic, script, and video. semi: approve only the final video."
-            >
-              Autopilot: <span className="font-semibold">{settings.autopilot_level}</span>
-            </button>
-          )}
           <button
             onClick={() => {
               setSelectMode((v) => !v);

@@ -34,6 +34,10 @@ class CreateProjectRequest(BaseModel):
     series_mode: Literal["none", "new", "continue"] = "none"
     series_title: Optional[str] = None
     series_id: Optional[int] = None
+    # Per-project override of the Settings-level Approval Mode (New Video
+    # flow's "override for this project" toggle). None = use the current
+    # Settings value, snapshotted onto the project at creation either way.
+    approval_mode_override: Optional[Literal["manual", "automatic"]] = None
 
 
 class RejectProjectRequest(BaseModel):
@@ -94,6 +98,7 @@ def create_project(request: Request, body: CreateProjectRequest):
             quality_preset=body.quality_preset,
             series_id=series_id,
             episode_number=episode_number,
+            approval_mode_override=body.approval_mode_override,
         )
     else:
         audience = (body.audience or "").strip() or config.trends.get("audience", "")
@@ -104,6 +109,7 @@ def create_project(request: Request, body: CreateProjectRequest):
             quality_preset=body.quality_preset,
             series_id=series_id,
             episode_number=episode_number,
+            approval_mode_override=body.approval_mode_override,
         )
     return utils.get_response(200, {"project_id": project_id})
 

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import Path, Query, Request
 from pydantic import BaseModel
@@ -15,7 +15,7 @@ router = new_router()
 class UpdateSettingsRequest(BaseModel):
     niche: Optional[str] = None
     audience: Optional[str] = None
-    autopilot_level: Optional[str] = None
+    approval_mode: Optional[Literal["manual", "automatic"]] = None
     schedule_enabled: Optional[bool] = None
     videos_per_day: Optional[int] = None
     run_at: Optional[str] = None
@@ -35,8 +35,8 @@ def update_settings(request: Request, body: UpdateSettingsRequest):
         config.trends["niche"] = body.niche
     if body.audience is not None:
         config.trends["audience"] = body.audience
-    if body.autopilot_level is not None:
-        config.agents["autopilot_level"] = body.autopilot_level
+    if body.approval_mode is not None:
+        config.agents["approval_mode"] = body.approval_mode
     if body.schedule_enabled is not None:
         config.schedule["enabled"] = body.schedule_enabled
     if body.videos_per_day is not None:
@@ -57,11 +57,17 @@ def update_settings(request: Request, body: UpdateSettingsRequest):
 
 
 def _current_settings() -> dict:
+    from app.agents import orchestrator  # local import: avoid a circular import at module load time
+
     return {
         "niche": config.trends.get("niche", ""),
         "audience": config.trends.get("audience", ""),
-        "autopilot_level": config.agents.get("autopilot_level", "semi"),
+        # Migrates the old, never-actually-enforced autopilot_level if
+        # approval_mode itself hasn't been set yet - see
+        # orchestrator._resolve_approval_mode.
+        "approval_mode": orchestrator._resolve_approval_mode(),
         "max_revisions": config.agents.get("max_revisions", 2),
+        "max_script_regenerations": config.agents.get("max_script_regenerations", 5),
         "schedule_enabled": config.schedule.get("enabled", False),
         "videos_per_day": config.schedule.get("videos_per_day", 1),
         "run_at": config.schedule.get("run_at", "09:00"),

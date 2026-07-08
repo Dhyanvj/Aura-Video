@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { api, ContentTypeTemplate, QualityPreset, SeriesT } from "../api";
+import { api, ApprovalMode, ContentTypeTemplate, QualityPreset, Settings, SeriesT } from "../api";
 
 // Illustrative per-video cost ranges from docs/DESIGN_V2.md §2.10 - not a
 // live calculation, just enough to compare presets before creating a video.
@@ -17,6 +17,7 @@ export default function NewVideo() {
 
   const [contentTypes, setContentTypes] = useState<ContentTypeTemplate[]>([]);
   const [seriesList, setSeriesList] = useState<SeriesT[]>([]);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [selectedType, setSelectedType] = useState<ContentTypeTemplate | null>(null);
   const [topic, setTopic] = useState("");
   const [niche, setNiche] = useState("");
@@ -25,12 +26,18 @@ export default function NewVideo() {
   const [seriesTitle, setSeriesTitle] = useState("");
   const [seriesId, setSeriesId] = useState<number | "">("");
   const [qualityPreset, setQualityPreset] = useState<QualityPreset>("standard");
+  const [overrideApprovalMode, setOverrideApprovalMode] = useState(false);
+  const [approvalModeOverride, setApprovalModeOverride] = useState<ApprovalMode>("manual");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     api.listContentTypes().then(setContentTypes).catch((e) => setError(String(e)));
     api.listSeries().then(setSeriesList).catch(() => undefined);
+    api.getSettings().then((s) => {
+      setSettings(s);
+      setApprovalModeOverride(s.approval_mode);
+    }).catch(() => undefined);
   }, []);
 
   // Arriving from a Series page's "+ Next Episode" button: pre-select that
@@ -87,6 +94,7 @@ export default function NewVideo() {
         series_mode: seriesMode,
         series_title: seriesMode === "new" ? seriesTitle.trim() : undefined,
         series_id: seriesMode === "continue" && seriesId !== "" ? Number(seriesId) : undefined,
+        approval_mode_override: overrideApprovalMode ? approvalModeOverride : undefined,
       });
       navigate(`/projects/${project_id}`);
     } catch (e) {
@@ -222,6 +230,34 @@ export default function NewVideo() {
             Estimated cost per video: <span className="text-slate-600 dark:text-slate-300">{costEstimate}</span> (illustrative estimate,
             see docs/DESIGN_V2.md)
           </p>
+
+          {settings && (
+            <div className="mb-4">
+              <label className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={overrideApprovalMode}
+                  onChange={(e) => setOverrideApprovalMode(e.target.checked)}
+                />
+                Override approval mode for this project (currently: {settings.approval_mode})
+              </label>
+              {overrideApprovalMode && (
+                <div className="mt-2 flex gap-4 text-sm text-slate-800 dark:text-slate-200">
+                  {(["manual", "automatic"] as const).map((mode) => (
+                    <label key={mode} className="flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="approval_mode_override"
+                        checked={approvalModeOverride === mode}
+                        onChange={() => setApprovalModeOverride(mode)}
+                      />
+                      {mode}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <button
             onClick={confirm}

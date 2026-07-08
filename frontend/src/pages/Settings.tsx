@@ -312,21 +312,25 @@ export default function Settings() {
       </section>
 
       <section className="mb-6 rounded-lg border border-border bg-panel p-4">
-        <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Autopilot</h2>
+        <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Approval Mode</h2>
         <div className="flex gap-4">
-          {(["manual", "semi"] as const).map((level) => (
-            <label key={level} className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-200">
+          {(["manual", "automatic"] as const).map((mode) => (
+            <label key={mode} className="flex items-center gap-2 text-sm text-slate-800 dark:text-slate-200">
               <input
                 type="radio"
-                name="autopilot"
-                checked={settings.autopilot_level === level}
-                onChange={() => save({ autopilot_level: level })}
+                name="approval_mode"
+                checked={settings.approval_mode === mode}
+                onChange={() => save({ approval_mode: mode })}
               />
-              {level === "manual" ? "Manual (approve topic, script, video)" : "Semi-auto (approve final video only)"}
+              {mode === "manual" ? "Manual (approve script before production)" : "Automatic (script auto-approved)"}
             </label>
           ))}
         </div>
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-500">Final-video approval can never be disabled.</p>
+        <p className="mt-2 text-xs text-slate-500 dark:text-slate-500">
+          Applies to future projects (the New Video flow can override it per project) - an in-flight project keeps
+          whatever mode it started with. Final Review before publishing can never be disabled, regardless of this
+          setting.
+        </p>
       </section>
 
       <section className="mb-6 rounded-lg border border-border bg-panel p-4">

@@ -161,6 +161,8 @@ export interface SeriesT {
   episodes?: SeriesEpisode[];
 }
 
+export type ApprovalMode = "manual" | "automatic";
+
 export interface CreateProjectPayload {
   topic?: string;
   niche?: string;
@@ -170,13 +172,15 @@ export interface CreateProjectPayload {
   series_mode?: "none" | "new" | "continue";
   series_title?: string;
   series_id?: number;
+  approval_mode_override?: ApprovalMode;
 }
 
 export interface Settings {
   niche: string;
   audience: string;
-  autopilot_level: string;
+  approval_mode: ApprovalMode;
   max_revisions: number;
+  max_script_regenerations: number;
   schedule_enabled: boolean;
   videos_per_day: number;
   run_at: string;
