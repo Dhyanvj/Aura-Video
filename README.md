@@ -88,7 +88,7 @@
 
 ## AI 内容工作室 🤖
 
-除了原有的单次生成 API，本项目现在还提供一套**自主运行、人工把关**的内容工作室：一个由 6 个 AI Agent 组成的流水线，把视频从 **选题 → 脚本 → 渲染 → 质检 → 人工审批 → 发布** 全程跑通，人类只需要在关键节点点头即可。
+除了原有的单次生成 API，本项目现在还提供一套**自主运行、人工把关**的内容工作室：一个由 6 个 AI Agent 组成的流水线，把视频从 **选题 → 调研 → 脚本 → 脚本审批 → 制作 → 质检 → 终审 → 批准 → 发布**（Idea → Research → Script → Script Approval → Production → QA → Final Review → Approved → Published）全程跑通，人类只需要在关键节点点头即可。
 
 | Agent | 职责 |
 | --- | --- |
@@ -99,9 +99,13 @@
 | **Publisher** | 生成标题/描述/标签/各平台文案与缩略图候选图；**只有人工点击「批准」后才会真正发布**，通过 [Upload-Post](https://upload-post.com) 跨平台发布 |
 | **Performance Analyst** | 发布 24 小时/72 小时后拉取 YouTube 播放/点赞/评论数据，生成简短「哪些有效/哪些没效」洞察，反哺下一轮 Trend Scout |
 
-内容工作室控制台（React 前端，由 FastAPI 单端口统一提供，见上方截图）包含：Pipeline Board（看板，实时更新）、Approval Queue（审批队列，唯一能触发发布的地方）、Trends、Analytics、Settings。
+**脚本审批闸门**：脚本生成后、任何 TTS/素材下载/渲染开销发生前，流水线在 `AWAITING_SCRIPT_APPROVAL` 状态暂停（Settings 的 Approval Mode = Manual，默认值）；人工可以编辑标题/脚本（自动保存、编辑后重新同步画面关键词，不重跑选题调研）、带备注重新生成（有独立于 QA 修订次数的上限）、拒绝该选题（回到选题阶段，旧脚本保留在 `revisions/` 下），或直接批准进入制作。Approval Mode 设为 Automatic 时脚本自动通过（记录一条 AgentEvent），终审发布闸门始终不受影响。New Video 流程可以为单个项目覆盖全局设置。
+
+内容工作室控制台（React 前端，由 FastAPI 单端口统一提供，见上方截图）包含：Pipeline Board（看板，实时更新，支持多选批量删除）、Script Review（脚本审批，Project Detail 内嵌面板 + Dashboard 快捷列表）、Approval Queue（审批队列，唯一能触发发布的地方）、Recycle Bin（回收站，软删除项目可在保留期内恢复，到期后由定时任务永久清除）、Trends、Analytics、Settings。
 
 **硬性规则：任何视频在人工点击「批准」之前，绝不会自动发布。**
+
+**删除项目**：任何项目（失败、已取消、低质量、重复、测试用）都可以从项目卡片菜单、Project Detail 或看板/仪表盘列表删除。默认软删除进 Recycle Bin（可配置保留天数，0 表示跳过回收站直接永久删除），正在生产中的项目会先被优雅取消再删除，绝不遗留孤立的渲染进程或写入已删除目录的文件。永久删除会移除项目目录、DB 记录，以及（仅当该项目从未发布过时）原创性指纹，以便重试同一选题；已发布过的项目即使被删除，指纹仍会保留，防止查重引擎让系统重新生成已经上线过的内容。
 
 启用 Agent 流水线需要在 `config.toml` 的 `[agents]` 中配置 `anthropic_api_key`（必需）；`[trends]` 的 `youtube_api_key` 为可选项，用于真实趋势数据和发布后数据追踪；发布功能需要在 `[app]` 中配置 `upload_post_*`（见下方"跨平台发布"功能说明）。未配置这些 key 时，相应 Agent 会优雅降级并在控制台给出明确提示，不会导致程序崩溃。
 
