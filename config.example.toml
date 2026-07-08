@@ -472,10 +472,34 @@ model = "claude-sonnet-5"
 # project is escalated to the human with the QA/revision report attached.
 max_revisions = 2
 
-# "manual": human approves topic, script, and final video.
-# "semi":   human approves only the final video + metadata (topic/script run automatically).
-# Final-video approval can never be disabled, regardless of this setting.
+# Approval Mode - how much a human has to approve before a project spends
+# any TTS/download/render credit on a script:
+# "manual":    (default) every project pauses at AWAITING_SCRIPT_APPROVAL
+#              until a human approves the script.
+# "automatic": the script is auto-approved (an AgentEvent records it) and
+#              production starts immediately.
+# Final-video (Final Review) approval can never be disabled, regardless of
+# this setting - it's a separate, always-on gate. Applies to all future
+# projects until changed; the New Video flow can override it per project,
+# and an in-flight project keeps whatever mode it was created under.
+approval_mode = "manual"
+
+# Deprecated, replaced by approval_mode above - left here only so an older
+# config.toml still parses; nothing reads this key directly anymore.
+# Migration (orchestrator._resolve_approval_mode): if approval_mode is unset
+# in your config.toml, this value is used instead - "manual" -> "manual"
+# (both meant "approve topic/script too"), "semi" -> "automatic" (both
+# meant "only the final video needs a human"), so an existing config.toml
+# with only autopilot_level keeps behaving exactly as it did before this
+# setting existed (autopilot_level was never actually enforced anywhere in
+# the pipeline before now).
 autopilot_level = "semi"
+
+# Maximum number of script regenerations at the AWAITING_SCRIPT_APPROVAL
+# gate (Regenerate with notes) before the UI suggests editing the script by
+# hand instead. Tracked separately from max_revisions above - these happen
+# before any production spend and never touch the QA revision budget.
+max_script_regenerations = 5
 
 # Monthly cap on total LLM cost (USD) across all projects created this
 # calendar month. 0 or omitted = no cap. When exceeded, the daily scheduler

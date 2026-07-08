@@ -59,6 +59,19 @@ class UpdateMetadataRequest(BaseModel):
     description: Optional[str] = None
 
 
+class RegenerateScriptRequest(BaseModel):
+    notes: Optional[str] = ""
+
+
+class RejectScriptRequest(BaseModel):
+    notes: Optional[str] = ""
+
+
+class UpdateScriptRequest(BaseModel):
+    title: Optional[str] = None
+    script: Optional[str] = None
+
+
 @router.post("/projects", summary="Start a new agent-driven video project")
 def create_project(request: Request, body: CreateProjectRequest):
     topic = (body.topic or "").strip()
@@ -172,6 +185,95 @@ def mark_published(request: Request, body: MarkPublishedRequest, project_id: int
     return utils.get_response(200, {"project_id": project_id})
 
 
+def _script_gate_error(exc: Exception) -> HttpException:
+    if isinstance(exc, ValueError):
+        return HttpException(task_id="", status_code=404, message=str(exc))
+    if isinstance(exc, PermissionError):
+        return HttpException(task_id="", status_code=409, message=str(exc))
+    if isinstance(exc, RuntimeError):
+        return HttpException(task_id="", status_code=400, message=str(exc))
+    raise exc
+
+
+@router.post(
+    "/projects/{project_id}/approve-script",
+    summary="Approve the script at the AWAITING_SCRIPT_APPROVAL gate; production begins",
+)
+def approve_script(request: Request, project_id: int = Path(...)):
+    try:
+        orchestrator.approve_script(project_id)
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise _script_gate_error(exc)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post(
+    "/projects/{project_id}/reject-script",
+    summary="Reject the topic at the script-approval gate; returns to idea stage",
+)
+def reject_script(request: Request, body: RejectScriptRequest, project_id: int = Path(...)):
+    try:
+        orchestrator.reject_topic_at_script(project_id, (body.notes or "").strip())
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise _script_gate_error(exc)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post(
+    "/projects/{project_id}/regenerate-script",
+    summary="Regenerate the script with notes at the approval gate (capped, tracked separately from QA revisions)",
+)
+def regenerate_script(request: Request, body: RegenerateScriptRequest, project_id: int = Path(...)):
+    try:
+        orchestrator.regenerate_script(project_id, (body.notes or "").strip())
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise _script_gate_error(exc)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.patch(
+    "/projects/{project_id}/script",
+    summary="Autosave a title/script edit at the script-approval gate; re-syncs search terms and records a human-edit diff",
+)
+def update_script(request: Request, body: UpdateScriptRequest, project_id: int = Path(...)):
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise HttpException(task_id="", status_code=404, message=f"project {project_id} not found")
+        if project.status != ProjectStatus.AWAITING_SCRIPT_APPROVAL.value:
+            raise HttpException(
+                task_id="", status_code=409,
+                message=f"project {project_id} is not awaiting script approval (status={project.status})",
+            )
+        brief = dict(project.brief or {})
+        edits = list(project.human_edits or [])
+        script_changed = False
+
+        if body.title is not None:
+            metadata_draft = dict(brief.get("metadata_draft") or {})
+            original_title = metadata_draft.get("working_title", "")
+            edits = _record_human_edit(edits, "title", original_title, body.title)
+            metadata_draft["working_title"] = body.title
+            brief["metadata_draft"] = metadata_draft
+        if body.script is not None:
+            original_script = brief.get("script", "")
+            edits = _record_human_edit(edits, "script", original_script, body.script)
+            script_changed = body.script != original_script
+            brief["script"] = body.script
+
+        project.brief = brief
+        project.human_edits = edits
+        session.add(project)
+        session.commit()
+
+    if script_changed:
+        # Re-syncs the scene plan (search terms) to the edited script in the
+        # background, without re-running topic research - see
+        # orchestrator.resync_scene_plan.
+        orchestrator.resync_scene_plan(project_id)
+    return utils.get_response(200, {"project_id": project_id})
+
+
 def _record_human_edit(edits: list, field: str, original_value: str, new_value: str) -> list:
     """
     Upserts one {field, before, after} entry per field rather than appending
@@ -269,6 +371,8 @@ def _project_summary(project: VideoProject) -> dict:
         "quality_preset": project.quality_preset,
         "series_id": project.series_id,
         "episode_number": project.episode_number,
+        "approval_mode": project.approval_mode,
+        "script_revision_count": project.script_revision_count,
         "created_at": project.created_at.isoformat(),
         "updated_at": project.updated_at.isoformat(),
     }

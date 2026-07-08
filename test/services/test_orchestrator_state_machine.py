@@ -15,11 +15,36 @@ from app.agents import orchestrator
 from app.agents.researcher import Researcher
 from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport, ResearchDossier, TrendIdea, TrendReport
 from app.agents.trend_scout import TrendScout
+from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ProjectStatus, VideoProject
 from app.models import const
 from app.services import cancellation, state as sm
 from test.services._test_helpers import IsolatedStorageDirMixin
+
+
+class _AutomaticApprovalModeMixin:
+    """
+    None of these tests are exercising the script-approval gate itself
+    (see test_script_approval_gate.py for that) - they predate it and
+    assert on QA/revision/resume/research-wiring behavior that expects the
+    pipeline to run straight through script generation into production, the
+    same as before the gate existed. Forcing automatic mode here keeps them
+    deterministic regardless of the ambient config.toml's own
+    autopilot_level/approval_mode value.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._original_approval_mode = config.agents.get("approval_mode")
+        config.agents["approval_mode"] = "automatic"
+
+    def tearDown(self):
+        if self._original_approval_mode is None:
+            config.agents.pop("approval_mode", None)
+        else:
+            config.agents["approval_mode"] = self._original_approval_mode
+        super().tearDown()
 
 
 def _fake_brief() -> CreativeBrief:
@@ -45,8 +70,9 @@ def _fake_render_success(task_id, params, stop_at="video"):
     )
 
 
-class TestOrchestratorStateMachine(IsolatedStorageDirMixin, unittest.TestCase):
+class TestOrchestratorStateMachine(_AutomaticApprovalModeMixin, IsolatedStorageDirMixin, unittest.TestCase):
     def setUp(self):
+        super().setUp()
         fd, self._db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         self._original_engine = db_session.engine
@@ -65,6 +91,7 @@ class TestOrchestratorStateMachine(IsolatedStorageDirMixin, unittest.TestCase):
         # into the OS temp dir per test is a fine trade for not having
         # cross-test corruption.
         self._stop_isolated_storage_dir()
+        super().tearDown()
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:
@@ -359,7 +386,7 @@ class TestOrchestratorStateMachine(IsolatedStorageDirMixin, unittest.TestCase):
         self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
 
 
-class TestOrchestratorResearchWiring(IsolatedStorageDirMixin, unittest.TestCase):
+class TestOrchestratorResearchWiring(_AutomaticApprovalModeMixin, IsolatedStorageDirMixin, unittest.TestCase):
     """
     Part 3: content types with research_required must get a real,
     per-content-type-verified topic (from the Researcher, not a generic
@@ -368,6 +395,7 @@ class TestOrchestratorResearchWiring(IsolatedStorageDirMixin, unittest.TestCase)
     """
 
     def setUp(self):
+        super().setUp()
         fd, self._db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         self._original_engine = db_session.engine
@@ -386,7 +414,7 @@ class TestOrchestratorResearchWiring(IsolatedStorageDirMixin, unittest.TestCase)
         # corrupting whichever test happens to run next. A few KB leaked
         # into the OS temp dir per test is a fine trade for not having
         # cross-test corruption.
-        pass
+        super().tearDown()
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:
@@ -638,7 +666,7 @@ class TestOrchestratorResearchWiring(IsolatedStorageDirMixin, unittest.TestCase)
         self.assertEqual(orchestrator._recent_topics(content_type_id="motivational", series_id=series_id), ["series a topic"])
 
 
-class TestCancellationCheckpoints(IsolatedStorageDirMixin, unittest.TestCase):
+class TestCancellationCheckpoints(_AutomaticApprovalModeMixin, IsolatedStorageDirMixin, unittest.TestCase):
     """
     Recycle Bin (docs/DECISIONS_V3.md): deleting an in-flight project must
     cancel it cleanly first. These exercise the cooperative-cancellation
@@ -650,6 +678,7 @@ class TestCancellationCheckpoints(IsolatedStorageDirMixin, unittest.TestCase):
     """
 
     def setUp(self):
+        super().setUp()
         fd, self._db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
         self._original_engine = db_session.engine
@@ -660,6 +689,7 @@ class TestCancellationCheckpoints(IsolatedStorageDirMixin, unittest.TestCase):
     def tearDown(self):
         db_session.engine = self._original_engine
         self._stop_isolated_storage_dir()
+        super().tearDown()
 
     def _get_project(self, project_id: int) -> VideoProject:
         with session_scope() as session:

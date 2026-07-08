@@ -98,6 +98,8 @@ export interface Project {
   quality_preset: string | null;
   series_id: number | null;
   episode_number: number | null;
+  approval_mode: string | null;
+  script_revision_count: number;
   created_at: string;
   updated_at: string;
   events?: AgentEventT[];
@@ -267,6 +269,23 @@ export const api = {
     }),
   updateProjectMetadata: (id: number, partial: { title?: string; description?: string }) =>
     apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/metadata`, {
+      method: "PATCH",
+      body: JSON.stringify(partial),
+    }),
+  approveScript: (id: number) =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/approve-script`, { method: "POST" }),
+  rejectScript: (id: number, notes = "") =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/reject-script`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    }),
+  regenerateScript: (id: number, notes = "") =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/regenerate-script`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    }),
+  updateScript: (id: number, partial: { title?: string; script?: string }) =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/script`, {
       method: "PATCH",
       body: JSON.stringify(partial),
     }),

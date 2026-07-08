@@ -94,6 +94,11 @@ export default function ProjectCard({ project, selectable, selected, onToggleSel
         <StatusBadge status={project.status} />
         <span className="text-xs text-slate-500 dark:text-slate-500">#{project.id}</span>
       </div>
+      {project.status === "AWAITING_SCRIPT_APPROVAL" && (
+        <div className="mb-2 inline-block rounded bg-fuchsia-700 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+          Needs your review
+        </div>
+      )}
       {(project.content_type_id || project.episode_number) && (
         <div className="mb-2 flex flex-wrap gap-1">
           {project.content_type_id && (

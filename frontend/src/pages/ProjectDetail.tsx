@@ -4,6 +4,7 @@ import { api, Project, taskFileUrl } from "../api";
 import { useLiveUpdates } from "../ws";
 import StatusBadge from "../components/StatusBadge";
 import ProjectTimeline from "../components/ProjectTimeline";
+import ScriptReviewPanel from "../components/ScriptReviewPanel";
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -89,6 +90,10 @@ export default function ProjectDetail() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 flex flex-col gap-6">
+          {project.status === "AWAITING_SCRIPT_APPROVAL" && (
+            <ScriptReviewPanel project={project} onChanged={refresh} />
+          )}
+
           <section className="rounded-lg border border-border bg-panel p-4">
             <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Timeline</h2>
             <ProjectTimeline events={project.events || []} />

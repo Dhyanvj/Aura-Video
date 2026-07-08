@@ -72,6 +72,7 @@ export default function Dashboard() {
   const failedThisMonth = projects.filter((p) => isThisMonth(p.created_at) && p.status === "FAILED").length;
   const failureRate = videosThisMonth > 0 ? Math.round((failedThisMonth / videosThisMonth) * 100) : 0;
   const awaitingApproval = projects.filter((p) => p.status === "AWAITING_HUMAN_APPROVAL");
+  const awaitingScriptApproval = projects.filter((p) => p.status === "AWAITING_SCRIPT_APPROVAL");
   const readyToPublish = projects.filter((p) => p.status === "APPROVED");
   const recent = [...projects]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
@@ -110,6 +111,7 @@ export default function Dashboard() {
           value={analytics ? `$${analytics.monthly_spend_usd.toFixed(2)}` : "-"}
           sub={analytics && analytics.monthly_budget_cap_usd > 0 ? `of $${analytics.monthly_budget_cap_usd.toFixed(2)}` : "no cap set"}
         />
+        <StatCard label="Script review queue" value={String(awaitingScriptApproval.length)} />
         <StatCard label="Approval queue" value={String(awaitingApproval.length)} />
         <StatCard label="Failure rate" value={`${failureRate}%`} sub="this month" />
       </div>
@@ -131,6 +133,29 @@ export default function Dashboard() {
         </div>
 
         <div className="flex flex-col gap-6">
+          <div className="rounded-lg border border-border bg-panel2 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Script review</h2>
+            </div>
+            {awaitingScriptApproval.length === 0 && (
+              <p className="text-xs text-slate-500 dark:text-slate-400">Nothing waiting.</p>
+            )}
+            <div className="flex flex-col gap-2">
+              {awaitingScriptApproval.slice(0, 4).map((p) => (
+                <Link
+                  key={p.id}
+                  to={`/projects/${p.id}`}
+                  className="flex items-center justify-between gap-2 rounded border border-border bg-panel p-2 text-xs text-slate-700 hover:border-accent dark:text-slate-300"
+                >
+                  <span className="min-w-0 flex-1 truncate">{p.topic || `#${p.id}`}</span>
+                  <span className="shrink-0 rounded bg-fuchsia-700 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                    review
+                  </span>
+                </Link>
+              ))}
+            </div>
+          </div>
+
           <div className="rounded-lg border border-border bg-panel2 p-4">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Pending approvals</h2>

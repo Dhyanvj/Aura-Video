@@ -105,6 +105,25 @@ def project_abs_dir(project_id: int) -> Optional[str]:
     return os.path.join(utils.storage_dir(), relative)
 
 
+def archive_pre_render_script(project_id: int, brief: dict) -> None:
+    """
+    Reject-topic at the script-approval gate (app/agents/orchestrator.py::
+    reject_topic_at_script): the project may not have a render yet, so
+    materialize_project's own archive-on-overwrite path (_archive_existing)
+    hasn't necessarily run. Ensures the folder exists and writes `brief`'s
+    script straight into revisions/{timestamp}/script.md, the same shape
+    materialize_project already uses for post-render revisions - "old
+    script preserved under revisions/" per spec, regardless of whether
+    production ever started.
+    """
+    relative = ensure_project_storage_path(project_id)
+    abs_dir = os.path.join(utils.storage_dir(), relative)
+    stamp = utcnow().strftime("%Y%m%dT%H%M%S")
+    dest = os.path.join(abs_dir, "revisions", stamp)
+    os.makedirs(dest, exist_ok=True)
+    _write_text(os.path.join(dest, "script.md"), _render_script_md(brief))
+
+
 def _archive_existing(abs_dir: str) -> None:
     existing = [name for name in _CANONICAL_FILES if os.path.isfile(os.path.join(abs_dir, name))]
     if not existing:

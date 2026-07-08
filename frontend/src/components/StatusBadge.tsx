@@ -3,6 +3,7 @@ const STATUS_COLORS: Record<string, string> = {
   IDEA_READY: "bg-slate-600",
   SCRIPTING: "bg-sky-600",
   SCRIPT_READY: "bg-sky-600",
+  AWAITING_SCRIPT_APPROVAL: "bg-fuchsia-700",
   PRODUCING: "bg-amber-600",
   RENDERED: "bg-amber-600",
   QA_REVIEW: "bg-amber-600",
@@ -15,6 +16,8 @@ const STATUS_COLORS: Record<string, string> = {
   ARCHIVED: "bg-slate-700",
   FAILED: "bg-rose-700",
   REJECTED: "bg-rose-700",
+  CANCELLED: "bg-slate-700",
+  DELETED: "bg-slate-800",
 };
 
 export default function StatusBadge({ status }: { status: string }) {

@@ -15,6 +15,7 @@ from app.agents import base as agent_base
 from app.agents import orchestrator
 from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport, TrendIdea, TrendReport
 from app.agents.trend_scout import TrendScout
+from app.config import config
 from app.db import session_scope
 from app.db.models import ProjectStatus, TopicEmbedding, VideoProject
 from app.services import originality
@@ -48,8 +49,18 @@ class TestOriginalityGate(IsolatedStorageDirMixin, unittest.TestCase):
         db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
         db_session.init_db()
         self._start_isolated_storage_dir()
+        # None of these tests exercise the script-approval gate itself (see
+        # test_script_approval_gate.py) - force automatic mode so the
+        # pipeline runs straight through script generation, same as before
+        # the gate existed, regardless of the ambient config.toml value.
+        self._original_approval_mode = config.agents.get("approval_mode")
+        config.agents["approval_mode"] = "automatic"
 
     def tearDown(self):
+        if self._original_approval_mode is None:
+            config.agents.pop("approval_mode", None)
+        else:
+            config.agents["approval_mode"] = self._original_approval_mode
         db_session.engine = self._original_engine
         # Not deleted: see docs/REVIEW_FINDINGS.md.
         self._stop_isolated_storage_dir()

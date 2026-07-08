@@ -6,12 +6,16 @@ import ProjectCard from "../components/ProjectCard";
 import ProjectFilters, { applyProjectFilters, EMPTY_FILTERS, ProjectFilterState } from "../components/ProjectFilters";
 
 const COLUMNS: { key: string; label: string; statuses: string[] }[] = [
-  { key: "idea", label: "Idea & Script", statuses: ["IDEA_PENDING", "IDEA_READY", "SCRIPTING", "SCRIPT_READY"] },
+  {
+    key: "idea",
+    label: "Idea & Script",
+    statuses: ["IDEA_PENDING", "IDEA_READY", "SCRIPTING", "SCRIPT_READY", "AWAITING_SCRIPT_APPROVAL"],
+  },
   { key: "producing", label: "Producing", statuses: ["PRODUCING", "RENDERED", "QA_REVIEW"] },
   { key: "approval", label: "Awaiting Approval", statuses: ["QA_PASSED", "AWAITING_HUMAN_APPROVAL"] },
   { key: "publishing", label: "Publishing", statuses: ["APPROVED", "PUBLISHING"] },
   { key: "published", label: "Published", statuses: ["PUBLISHED", "TRACKING", "ARCHIVED"] },
-  { key: "failed", label: "Failed / Rejected", statuses: ["FAILED", "REJECTED"] },
+  { key: "failed", label: "Failed / Rejected", statuses: ["FAILED", "REJECTED", "CANCELLED"] },
 ];
 
 export default function PipelineBoard() {

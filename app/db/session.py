@@ -24,6 +24,8 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "deleted_at": "TIMESTAMP",
     "status_before_delete": "TEXT",
     "cancel_requested": "BOOLEAN NOT NULL DEFAULT 0",
+    "approval_mode": "TEXT",
+    "script_revision_count": "INTEGER NOT NULL DEFAULT 0",
 }
 _CONTENTTYPETEMPLATE_NEW_COLUMNS = {
     "description": "TEXT NOT NULL DEFAULT ''",

@@ -72,6 +72,52 @@ def _max_revisions() -> int:
     return int(config.agents.get("max_revisions", 2))
 
 
+def _max_script_regenerations() -> int:
+    return int(config.agents.get("max_script_regenerations", 5))
+
+
+def _resolve_approval_mode(override: Optional[str] = None) -> str:
+    """
+    "manual" (default) pauses every new project at AWAITING_SCRIPT_APPROVAL
+    until a human approves the script; "automatic" auto-approves it (an
+    AgentEvent records why) and production starts immediately. Either way,
+    Final Review before publishing stays mandatory - this setting never
+    touches that gate. `override` is the New Video flow's per-project toggle
+    and always wins when given.
+
+    Migration note: replaces the old config.agents.autopilot_level
+    ("manual"/"semi"), which was stored and shown in Settings but never
+    actually enforced anywhere in the pipeline. Mapping: "manual" ->
+    "manual" (both meant "approve topic/script too"), "semi" -> "automatic"
+    (both meant "only the final video needs a human"). config.agents.
+    approval_mode is the new key; autopilot_level is left alone in
+    config.toml for backward compatibility, but nothing else reads it.
+    """
+    if override in ("manual", "automatic"):
+        return override
+    explicit = config.agents.get("approval_mode")
+    if explicit in ("manual", "automatic"):
+        return explicit
+    legacy = config.agents.get("autopilot_level")
+    if legacy == "semi":
+        return "automatic"
+    return "manual"
+
+
+def _project_approval_mode(project_id: int) -> str:
+    """
+    The mode a project was actually created under (persisted on VideoProject
+    at creation - see start_manual_project/start_auto_trend_project), never
+    the live Settings value, so changing Settings mid-flight never affects
+    an already-running project. Falls back to resolving fresh only for
+    pre-migration rows with no stored value.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        stored = project.approval_mode if project else None
+    return stored if stored in ("manual", "automatic") else _resolve_approval_mode()
+
+
 def _recent_performance_notes(niche: str, limit: int = 5) -> list[str]:
     # Feeds prior "what worked / what didn't" insights back into the next
     # Trend Scout run for this niche.
@@ -249,6 +295,7 @@ def start_manual_project(
     quality_preset: Optional[str] = None,
     series_id: Optional[int] = None,
     episode_number: Optional[int] = None,
+    approval_mode_override: Optional[str] = None,
 ) -> int:
     """
     Creates a project from a human-supplied topic (skips the Trend Scout) and
@@ -264,6 +311,7 @@ def start_manual_project(
             quality_preset=quality_preset,
             series_id=series_id,
             episode_number=episode_number,
+            approval_mode=_resolve_approval_mode(approval_mode_override),
         )
         session.add(project)
         session.commit()
@@ -283,6 +331,7 @@ def start_auto_trend_project(
     quality_preset: Optional[str] = None,
     series_id: Optional[int] = None,
     episode_number: Optional[int] = None,
+    approval_mode_override: Optional[str] = None,
 ) -> int:
     """
     Creates a project with no human-supplied topic: the Trend Scout proposes
@@ -297,6 +346,7 @@ def start_auto_trend_project(
             quality_preset=quality_preset,
             series_id=series_id,
             episode_number=episode_number,
+            approval_mode=_resolve_approval_mode(approval_mode_override),
         )
         session.add(project)
         session.commit()
@@ -667,6 +717,23 @@ def _run_pipeline(
         _set_status(project_id, ProjectStatus.SCRIPT_READY)
         _log_event(project_id, "Creative Director produced a script and brief")
 
+        # Script-approval gate: only on the first pass through SCRIPT_READY
+        # for this project (revision_notes is None) - never on a QA-triggered
+        # revision loop re-entry (retry_with_revision, or a QA "revise"
+        # verdict), which is already past the gate and reworking a script a
+        # human already approved into production, not a new script to
+        # re-review. regenerate_script()'s own return to
+        # AWAITING_SCRIPT_APPROVAL is a separate, explicit code path (not
+        # through _run_pipeline) so it isn't affected by this guard either.
+        if revision_notes is None:
+            cancellation.raise_if_cancelled(project_id)
+            if _project_approval_mode(project_id) == "automatic":
+                _log_event(project_id, "Script auto-approved by mode setting", type_="output")
+            else:
+                _set_status(project_id, ProjectStatus.AWAITING_SCRIPT_APPROVAL)
+                _log_event(project_id, "Awaiting human script approval before production begins")
+                return
+
         cancellation.raise_if_cancelled(project_id)
         _produce_and_review(project_id, topic, niche, brief, dossier)
     except PipelineCancelled:
@@ -906,6 +973,165 @@ def retry_with_revision(project_id: int, revision_notes: str) -> None:
         target=_run_pipeline, args=(project_id, topic, niche, revision_notes), daemon=True
     )
     thread.start()
+
+
+def _require_awaiting_script_approval(project: Optional[VideoProject], project_id: int) -> None:
+    if project is None:
+        raise ValueError(f"project {project_id} not found")
+    if project.status != ProjectStatus.AWAITING_SCRIPT_APPROVAL.value:
+        raise PermissionError(
+            f"project {project_id} is not awaiting script approval (status={project.status})"
+        )
+
+
+def _stored_dossier(project_id: int) -> Optional[ResearchDossier]:
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        stored = project.research_evidence if project else None
+    return ResearchDossier.model_validate(stored) if stored else None
+
+
+def approve_script(project_id: int) -> None:
+    """
+    The script-approval gate's human action (docs/DECISIONS_V3.md): the one
+    and only path from AWAITING_SCRIPT_APPROVAL into production. Mirrors
+    approve_and_publish's pattern - enforce the project is actually at the
+    gate, then continue in a background thread so the API call returns
+    immediately.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_awaiting_script_approval(project, project_id)
+        topic = project.topic
+        niche = project.niche or ""
+        brief_dict = project.brief
+
+    if not brief_dict:
+        raise RuntimeError(f"project {project_id} has no script to approve")
+
+    brief = CreativeBrief.model_validate(brief_dict)
+    dossier = _stored_dossier(project_id)
+
+    _log_event(project_id, "Script approved by human; starting production")
+    thread = threading.Thread(
+        target=_run_after_script_approval, args=(project_id, topic, niche, brief, dossier), daemon=True
+    )
+    thread.start()
+
+
+def _run_after_script_approval(
+    project_id: int, topic: str, niche: str, brief: CreativeBrief, dossier: Optional[ResearchDossier]
+) -> None:
+    try:
+        cancellation.raise_if_cancelled(project_id)
+        _produce_and_review(project_id, topic, niche, brief, dossier)
+    except PipelineCancelled:
+        _mark_cancelled(project_id)
+    except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
+        logger.exception(f"project {project_id} failed after script approval")
+        _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
+        _log_event(project_id, f"Pipeline failed: {exc}", type_="error")
+
+
+def reject_topic_at_script(project_id: int, notes: str = "") -> None:
+    """
+    Reject-topic path (Feature 2 spec): the topic itself isn't working, not
+    just the wording - archive the current script under revisions/ (not
+    lost) and return the project to idea stage for a new topic, rather than
+    looping the Creative Director on the same topic (that's Regenerate).
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_awaiting_script_approval(project, project_id)
+        brief = project.brief
+
+    if brief:
+        project_storage.archive_pre_render_script(project_id, brief)
+
+    _set_status(project_id, ProjectStatus.IDEA_PENDING, topic=None, brief=None)
+    suffix = f": {notes}" if notes else ""
+    _log_event(project_id, f"Topic rejected at script review{suffix}; returned to idea stage")
+
+
+def regenerate_script(project_id: int, notes: str = "") -> None:
+    """
+    Regenerate-with-notes at the script-approval gate (Feature 2 spec):
+    reuses the Creative Director revision plumbing (same call as a QA
+    "creative_director" revision) but capped by script_revision_count /
+    max_script_regenerations - a separate, smaller budget from QA's
+    max_revisions, since this happens before any production spend and never
+    touches that budget. Always returns to AWAITING_SCRIPT_APPROVAL when it
+    finishes, for another human look.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_awaiting_script_approval(project, project_id)
+        topic = project.topic
+        niche = project.niche or ""
+        current_count = project.script_revision_count
+
+    cap = _max_script_regenerations()
+    if current_count >= cap:
+        raise PermissionError(
+            f"script regeneration limit ({cap}) reached for project {project_id}; edit the script manually instead"
+        )
+
+    _set_status(project_id, ProjectStatus.SCRIPTING, script_revision_count=current_count + 1)
+    _log_event(project_id, f"Script regeneration requested ({current_count + 1}/{cap}): {notes}")
+    thread = threading.Thread(target=_run_script_regeneration, args=(project_id, topic, niche, notes), daemon=True)
+    thread.start()
+
+
+def _run_script_regeneration(project_id: int, topic: str, niche: str, notes: str) -> None:
+    try:
+        cancellation.raise_if_cancelled(project_id)
+        dossier = _stored_dossier(project_id)
+        _write_brief(project_id, topic, niche, notes, dossier)
+        _set_status(project_id, ProjectStatus.SCRIPT_READY)
+        _log_event(project_id, "Creative Director regenerated the script")
+
+        cancellation.raise_if_cancelled(project_id)
+        _set_status(project_id, ProjectStatus.AWAITING_SCRIPT_APPROVAL)
+        _log_event(project_id, "Awaiting human script approval before production begins")
+    except PipelineCancelled:
+        _mark_cancelled(project_id)
+    except Exception as exc:  # noqa: BLE001 - surface any pipeline failure on the project
+        logger.exception(f"project {project_id} script regeneration failed")
+        _set_status(project_id, ProjectStatus.FAILED, failure_reason=str(exc))
+        _log_event(project_id, f"Script regeneration failed: {exc}", type_="error")
+
+
+def resync_scene_plan(project_id: int) -> None:
+    """
+    Feature 2's "editing the script re-syncs the scene plan": re-runs just
+    the search-terms step (this codebase's scene plan - see
+    app/agents/creative_director.py, there's no separate scene-segmentation
+    agent) against the just-edited script, in the background, WITHOUT
+    re-running topic research or a full Creative Director script rewrite -
+    the human already supplied the exact words to use. Call after the edit
+    itself is already saved (app/controllers/v1/pipeline.py's script-edit
+    endpoint), so the fresh session.get() here picks up the new script text.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_awaiting_script_approval(project, project_id)
+        niche = project.niche or ""
+        brief_dict = project.brief
+
+    if not brief_dict:
+        return
+    brief = CreativeBrief.model_validate(brief_dict)
+    thread = threading.Thread(target=_run_scene_plan_resync, args=(project_id, niche, brief), daemon=True)
+    thread.start()
+
+
+def _run_scene_plan_resync(project_id: int, niche: str, brief: CreativeBrief) -> None:
+    try:
+        _revise_search_terms(project_id, niche, brief, "human edited the script text; re-sync search terms to match")
+        _log_event(project_id, "Scene plan re-synced to the edited script")
+    except Exception as exc:  # noqa: BLE001 - the script edit itself is already saved; a re-sync failure must not look like data loss
+        logger.exception(f"project {project_id} scene plan re-sync failed")
+        _log_event(project_id, f"Scene plan re-sync failed (script edit was still saved): {exc}", type_="error")
 
 
 def approve_and_publish(project_id: int, platforms: List[str], thumbnail_path: Optional[str] = None) -> None:

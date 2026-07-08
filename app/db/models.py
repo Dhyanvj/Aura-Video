@@ -101,6 +101,15 @@ class VideoProject(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
     published_at: Optional[datetime] = None
 
+    # v3 script-approval gate: the mode this project was created under
+    # ("manual" | "automatic"), snapshotted once at creation so an in-flight
+    # project is never affected by a later Settings change (docs/DECISIONS_V3.md).
+    approval_mode: Optional[str] = None
+    # Script-stage regenerations at the AWAITING_SCRIPT_APPROVAL gate, tracked
+    # separately from QA's revision_count/max_revisions - regenerating a
+    # script the human hasn't approved yet is not a QA revision loop.
+    script_revision_count: int = Field(default=0)
+
     # v3 Recycle Bin (docs/DECISIONS_V3.md): soft-delete fields. deleted_at
     # set means "in the bin"; status_before_delete is what Restore returns
     # the project to. cancel_requested is the cooperative-cancellation signal
