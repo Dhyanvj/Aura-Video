@@ -1,0 +1,205 @@
+{
+  "output000.mp3": {
+    "brightness": 767.2,
+    "energy": 0.0426,
+    "palette": "viral_trending",
+    "score": 0.7894,
+    "tempo_bpm": 187.5
+  },
+  "output001.mp3": {
+    "brightness": 807.2,
+    "energy": 0.0447,
+    "palette": "tech_energetic",
+    "score": 0.8598,
+    "tempo_bpm": 187.5
+  },
+  "output002.mp3": {
+    "brightness": 701.4,
+    "energy": 0.0282,
+    "palette": "cinematic_uplifting",
+    "score": 0.1825,
+    "tempo_bpm": 103.4
+  },
+  "output003.mp3": {
+    "brightness": 734.3,
+    "energy": 0.0284,
+    "palette": "upbeat_bright",
+    "score": 0.5232,
+    "tempo_bpm": 176.5
+  },
+  "output004.mp3": {
+    "brightness": 678.4,
+    "energy": 0.048,
+    "palette": "viral_trending",
+    "score": 0.7642,
+    "tempo_bpm": 187.5
+  },
+  "output005.mp3": {
+    "brightness": 646.7,
+    "energy": 0.0393,
+    "palette": "tech_ambient",
+    "score": 0.2683,
+    "tempo_bpm": 103.4
+  },
+  "output006.mp3": {
+    "brightness": 660.5,
+    "energy": 0.0309,
+    "palette": "cinematic_uplifting",
+    "score": 0.1736,
+    "tempo_bpm": 103.4
+  },
+  "output007.mp3": {
+    "brightness": 642.9,
+    "energy": 0.0317,
+    "palette": "upbeat_bright",
+    "score": 0.4678,
+    "tempo_bpm": 176.5
+  },
+  "output008.mp3": {
+    "brightness": 784.9,
+    "energy": 0.0462,
+    "palette": "viral_trending",
+    "score": 0.8554,
+    "tempo_bpm": 187.5
+  },
+  "output009.mp3": {
+    "brightness": 671.5,
+    "energy": 0.0358,
+    "palette": "tech_ambient",
+    "score": 0.2494,
+    "tempo_bpm": 103.4
+  },
+  "output010.mp3": {
+    "brightness": 654.2,
+    "energy": 0.0309,
+    "palette": "upbeat_bright",
+    "score": 0.4695,
+    "tempo_bpm": 176.5
+  },
+  "output011.mp3": {
+    "brightness": 804.7,
+    "energy": 0.0365,
+    "palette": "viral_trending",
+    "score": 0.7502,
+    "tempo_bpm": 187.5
+  },
+  "output012.mp3": {
+    "brightness": 867.1,
+    "energy": 0.0461,
+    "palette": "tech_energetic",
+    "score": 0.9426,
+    "tempo_bpm": 187.5
+  },
+  "output013.mp3": {
+    "brightness": 625.4,
+    "energy": 0.0334,
+    "palette": "cinematic_uplifting",
+    "score": 0.1685,
+    "tempo_bpm": 103.4
+  },
+  "output014.mp3": {
+    "brightness": 740.8,
+    "energy": 0.0292,
+    "palette": "viral_trending",
+    "score": 0.5406,
+    "tempo_bpm": 176.5
+  },
+  "output015.mp3": {
+    "brightness": 787.4,
+    "energy": 0.0432,
+    "palette": "viral_trending",
+    "score": 0.819,
+    "tempo_bpm": 187.5
+  },
+  "output016.mp3": {
+    "brightness": 762.5,
+    "energy": 0.0412,
+    "palette": "tech_ambient",
+    "score": 0.3661,
+    "tempo_bpm": 90.9
+  },
+  "output017.mp3": {
+    "brightness": 678.9,
+    "energy": 0.0296,
+    "palette": "cinematic_uplifting",
+    "score": 0.1765,
+    "tempo_bpm": 103.4
+  },
+  "output018.mp3": {
+    "brightness": 725.8,
+    "energy": 0.0282,
+    "palette": "upbeat_bright",
+    "score": 0.5114,
+    "tempo_bpm": 176.5
+  },
+  "output019.mp3": {
+    "brightness": 747.6,
+    "energy": 0.0505,
+    "palette": "tech_energetic",
+    "score": 0.8713,
+    "tempo_bpm": 187.5
+  },
+  "output020.mp3": {
+    "brightness": 639.4,
+    "energy": 0.0385,
+    "palette": "tech_ambient",
+    "score": 0.25,
+    "tempo_bpm": 103.4
+  },
+  "output021.mp3": {
+    "brightness": 650.8,
+    "energy": 0.0314,
+    "palette": "cinematic_uplifting",
+    "score": 0.1697,
+    "tempo_bpm": 103.4
+  },
+  "output022.mp3": {
+    "brightness": 588.5,
+    "energy": 0.0281,
+    "palette": "tech_ambient",
+    "score": 0.4078,
+    "tempo_bpm": 187.5
+  },
+  "output023.mp3": {
+    "brightness": 816.2,
+    "energy": 0.0453,
+    "palette": "tech_energetic",
+    "score": 0.8774,
+    "tempo_bpm": 187.5
+  },
+  "output024.mp3": {
+    "brightness": 620.1,
+    "energy": 0.0362,
+    "palette": "tech_ambient",
+    "score": 0.1993,
+    "tempo_bpm": 103.4
+  },
+  "output025.mp3": {
+    "brightness": 722.9,
+    "energy": 0.0275,
+    "palette": "upbeat_bright",
+    "score": 0.4586,
+    "tempo_bpm": 166.7
+  },
+  "output027.mp3": {
+    "brightness": 807.0,
+    "energy": 0.0447,
+    "palette": "tech_energetic",
+    "score": 0.8596,
+    "tempo_bpm": 187.5
+  },
+  "output028.mp3": {
+    "brightness": 700.3,
+    "energy": 0.0294,
+    "palette": "cinematic_uplifting",
+    "score": 0.1969,
+    "tempo_bpm": 103.4
+  },
+  "output029.mp3": {
+    "brightness": 732.4,
+    "energy": 0.0279,
+    "palette": "upbeat_bright",
+    "score": 0.5146,
+    "tempo_bpm": 176.5
+  }
+}

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from app.config import config
 from app.controllers.v1.base import new_router
 from app.models.exception import HttpException
-from app.services import playbook, scheduler
+from app.services import playbook, rescue, scheduler
 from app.utils import utils
 
 router = new_router()
@@ -136,3 +136,11 @@ def rollback_playbook(request: Request, playbook_id: int = Path(...)):
     except ValueError as exc:
         raise HttpException(task_id="", status_code=404, message=str(exc))
     return utils.get_response(200, _playbook_summary(restored))
+
+
+@router.post(
+    "/maintenance/rescue-scan",
+    summary="Scan every Failed project for a usable render and cache the result (surfacing only, never auto-rescues)",
+)
+def run_rescue_scan(request: Request):
+    return utils.get_response(200, rescue.backfill_scan())

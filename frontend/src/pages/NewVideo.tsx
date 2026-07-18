@@ -32,6 +32,10 @@ export default function NewVideo() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Fetch all types (not just enabled) so an existing series under a since-
+    // disabled type (e.g. a legacy "motivational" series) still resolves via
+    // the preselect/eligibleSeries lookups below - only the New Video card
+    // grid itself is restricted to creatable (enabled) types.
     api.listContentTypes().then(setContentTypes).catch((e) => setError(String(e)));
     api.listSeries().then(setSeriesList).catch(() => undefined);
     api.getSettings().then((s) => {
@@ -62,6 +66,8 @@ export default function NewVideo() {
     setSeriesMode("none");
     setSeriesId("");
   };
+
+  const creatableTypes = useMemo(() => contentTypes.filter((t) => t.enabled), [contentTypes]);
 
   const eligibleSeries = useMemo(
     () => (selectedType ? seriesList.filter((s) => s.content_type_id === selectedType.id) : []),
@@ -112,7 +118,7 @@ export default function NewVideo() {
       {error && <div className="mb-4 rounded bg-rose-100 dark:bg-rose-950/50 p-3 text-sm text-rose-700 dark:text-rose-300">{error}</div>}
 
       <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
-        {contentTypes.map((t) => (
+        {creatableTypes.map((t) => (
           <button
             key={t.id}
             onClick={() => selectType(t)}
@@ -139,7 +145,7 @@ export default function NewVideo() {
             </div>
           </button>
         ))}
-        {contentTypes.length === 0 && !error && <div className="text-sm text-slate-500 dark:text-slate-500">Loading content types...</div>}
+        {creatableTypes.length === 0 && !error && <div className="text-sm text-slate-500 dark:text-slate-500">Loading content types...</div>}
       </div>
 
       {selectedType && (

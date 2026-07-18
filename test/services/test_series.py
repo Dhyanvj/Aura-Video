@@ -44,10 +44,24 @@ class TestContentTypeSeeding(unittest.TestCase):
         # empty, tableless file at the same path, corrupting the next test.
         pass
 
-    def test_five_built_in_templates_seeded_once(self):
+    def test_built_in_templates_seeded_once(self):
         with session_scope() as session:
             ids = {t.id for t in session.exec(select(ContentTypeTemplate)).all()}
-        self.assertEqual(ids, {"motivational", "fun_facts", "ai_news", "world_news", "trending_now"})
+        self.assertEqual(
+            ids,
+            {
+                "motivational_story",
+                "motivational_quote",
+                "motivational_speech",
+                "motivational_words",
+                "motivational_lines",
+                "motivational",
+                "fun_facts",
+                "ai_news",
+                "world_news",
+                "trending_now",
+            },
+        )
 
     def test_seeding_does_not_overwrite_edited_rows(self):
         # A user-edited template must survive a restart (which re-runs seeding).

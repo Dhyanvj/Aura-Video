@@ -9,6 +9,7 @@ const STATUS_COLORS: Record<string, string> = {
   QA_REVIEW: "bg-amber-600",
   QA_PASSED: "bg-emerald-700",
   AWAITING_HUMAN_APPROVAL: "bg-fuchsia-700",
+  NEEDS_HUMAN_REVIEW: "bg-orange-700",
   APPROVED: "bg-emerald-700",
   PUBLISHING: "bg-emerald-700",
   PUBLISHED: "bg-emerald-600",

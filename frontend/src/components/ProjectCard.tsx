@@ -9,10 +9,38 @@ interface ProjectCardProps {
   selected?: boolean;
   onToggleSelect?: (id: number) => void;
   onDeleted?: () => void;
+  onChanged?: () => void;
 }
 
-export default function ProjectCard({ project, selectable, selected, onToggleSelect, onDeleted }: ProjectCardProps) {
+export default function ProjectCard({ project, selectable, selected, onToggleSelect, onDeleted, onChanged }: ProjectCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rescuing, setRescuing] = useState(false);
+
+  const rescueFromCard = async () => {
+    setMenuOpen(false);
+    setRescuing(true);
+    try {
+      const eligibility = await api.getRescueEligibility(project.id);
+      if (!eligibility.eligible) {
+        window.alert(`No usable render exists — ${eligibility.reason}. Use Retry production instead.`);
+        return;
+      }
+      const best = eligibility.candidates[0];
+      const confirmed = window.confirm(
+        `Override this project's Failed status and send it to review?\n\n` +
+          `Original failure reason:\n${project.failure_reason || "(none recorded)"}\n\n` +
+          `Render to use: ${best.label}${best.recorded_at ? ` (${new Date(best.recorded_at).toLocaleString()})` : ""}\n\n` +
+          `For a different render (if more than one exists), open the project page instead.`,
+      );
+      if (!confirmed) return;
+      await api.rescueProject(project.id, best.id);
+      onChanged?.();
+    } catch (e) {
+      window.alert(String(e));
+    } finally {
+      setRescuing(false);
+    }
+  };
 
   const deleteProject = async (permanent: boolean) => {
     setMenuOpen(false);
@@ -67,7 +95,19 @@ export default function ProjectCard({ project, selectable, selected, onToggleSel
             &#8942;
           </button>
           {menuOpen && (
-            <div className="absolute right-0 top-6 z-10 w-40 rounded border border-border bg-panel shadow-lg">
+            <div className="absolute right-0 top-6 z-10 w-48 rounded border border-border bg-panel shadow-lg">
+              {project.status === "FAILED" && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    rescueFromCard();
+                  }}
+                  disabled={rescuing}
+                  className="block w-full px-3 py-2 text-left text-xs text-emerald-600 hover:bg-panel2 dark:text-emerald-400 disabled:opacity-50"
+                >
+                  Override failure — send to review
+                </button>
+              )}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -97,6 +137,11 @@ export default function ProjectCard({ project, selectable, selected, onToggleSel
       {project.status === "AWAITING_SCRIPT_APPROVAL" && (
         <div className="mb-2 inline-block rounded bg-fuchsia-700 px-1.5 py-0.5 text-[10px] font-semibold text-white">
           Needs your review
+        </div>
+      )}
+      {project.status === "FAILED" && project.rescue_eligible && (
+        <div className="mb-2 inline-block rounded bg-emerald-700 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+          Finished render available
         </div>
       )}
       {(project.content_type_id || project.episode_number) && (

@@ -23,9 +23,16 @@ class CreateSeriesRequest(BaseModel):
 @router.post("/series", summary="Start a new series (its Bible starts with no locked voice yet)")
 def create_series(request: Request, body: CreateSeriesRequest):
     with session_scope() as session:
-        if session.get(ContentTypeTemplate, body.content_type_id) is None:
+        template = session.get(ContentTypeTemplate, body.content_type_id)
+        if template is None:
             raise HttpException(
                 task_id="", status_code=404, message=f"content type {body.content_type_id!r} not found"
+            )
+        if not template.enabled:
+            raise HttpException(
+                task_id="",
+                status_code=400,
+                message=f"content type {body.content_type_id!r} is disabled and cannot start a new series",
             )
     title = body.title.strip()
     if not title:

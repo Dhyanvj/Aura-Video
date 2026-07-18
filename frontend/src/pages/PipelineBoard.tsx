@@ -12,7 +12,11 @@ const COLUMNS: { key: string; label: string; statuses: string[] }[] = [
     statuses: ["IDEA_PENDING", "IDEA_READY", "SCRIPTING", "SCRIPT_READY", "AWAITING_SCRIPT_APPROVAL"],
   },
   { key: "producing", label: "Producing", statuses: ["PRODUCING", "RENDERED", "QA_REVIEW"] },
-  { key: "approval", label: "Awaiting Approval", statuses: ["QA_PASSED", "AWAITING_HUMAN_APPROVAL"] },
+  {
+    key: "approval",
+    label: "Awaiting Approval",
+    statuses: ["QA_PASSED", "AWAITING_HUMAN_APPROVAL", "NEEDS_HUMAN_REVIEW"],
+  },
   { key: "publishing", label: "Publishing", statuses: ["APPROVED", "PUBLISHING"] },
   { key: "published", label: "Published", statuses: ["PUBLISHED", "TRACKING", "ARCHIVED"] },
   { key: "failed", label: "Failed / Rejected", statuses: ["FAILED", "REJECTED", "CANCELLED"] },
@@ -186,6 +190,7 @@ export default function PipelineBoard() {
                     selected={selectedIds.includes(p.id)}
                     onToggleSelect={toggleSelect}
                     onDeleted={refresh}
+                    onChanged={refresh}
                   />
                 ))}
                 {items.length === 0 && <div className="text-xs text-slate-600">No projects</div>}

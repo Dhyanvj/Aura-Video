@@ -1,12 +1,146 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, Project, taskFileUrl } from "../api";
+import { api, Finding, Project, taskFileUrl } from "../api";
 import { useLiveUpdates } from "../ws";
 
 const ALL_PLATFORMS = ["tiktok", "instagram", "youtube"];
 const AUTOSAVE_DEBOUNCE_MS = 800;
 
+const SEVERITY_COLORS: Record<string, string> = {
+  critical: "bg-rose-700",
+  major: "bg-amber-600",
+  minor: "bg-slate-600",
+};
+
+function EscalatedReviewCard({ project, onResolved }: { project: Project; onResolved: () => void }) {
+  const latestReport = project.qa_reports?.[project.qa_reports.length - 1];
+  const findings: Finding[] = latestReport?.findings ?? [];
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmPolicyRisk, setConfirmPolicyRisk] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const videoUrl = project.video_url || "";
+
+  const toggle = (fingerprint: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(fingerprint)) next.delete(fingerprint);
+      else next.add(fingerprint);
+      return next;
+    });
+  };
+
+  const hasPolicyFindingSelected = findings.some((f) => selected.has(f.fingerprint) && f.category === "content_policy");
+
+  const run = async (action: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      onResolved();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded border border-orange-700/50 bg-panel p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-sm font-semibold text-slate-900 dark:text-slate-100">{project.topic || `#${project.id}`}</span>
+        <span className="rounded bg-orange-700 px-2 py-0.5 text-xs font-medium text-white">Needs your review</span>
+      </div>
+      {project.escalation_reason && (
+        <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">{project.escalation_reason}</p>
+      )}
+      {error && <div className="mb-2 rounded bg-rose-100 dark:bg-rose-950/50 p-2 text-xs text-rose-700 dark:text-rose-300">{error}</div>}
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div>
+          {videoUrl && (
+            <video src={videoUrl} controls className="mx-auto max-h-[50vh] w-full rounded-lg border border-border bg-black" />
+          )}
+        </div>
+        <div className="flex flex-col gap-3">
+          <div>
+            <p className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+              QA findings ({findings.length}) - check any you want to approve despite
+            </p>
+            <div className="flex flex-col gap-1">
+              {findings.map((f) => (
+                <label
+                  key={f.fingerprint}
+                  className="flex items-start gap-2 rounded bg-panel2 p-1.5 text-xs text-slate-700 dark:text-slate-300"
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    disabled={!f.overridable}
+                    checked={selected.has(f.fingerprint)}
+                    onChange={() => toggle(f.fingerprint)}
+                  />
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold text-white ${SEVERITY_COLORS[f.severity] ?? "bg-slate-600"}`}>
+                    {f.severity}
+                  </span>
+                  <span className="flex-1">
+                    {f.message}
+                    {!f.overridable && <span className="ml-1 italic text-rose-500">(requires a re-render, cannot be overridden)</span>}
+                  </span>
+                </label>
+              ))}
+              {findings.length === 0 && <p className="text-xs text-slate-500 dark:text-slate-400">No structured findings recorded.</p>}
+            </div>
+          </div>
+
+          {hasPolicyFindingSelected && (
+            <label className="flex items-center gap-2 text-xs text-rose-600 dark:text-rose-400">
+              <input type="checkbox" checked={confirmPolicyRisk} onChange={(e) => setConfirmPolicyRisk(e.target.checked)} />
+              I understand overriding a content-policy finding may risk platform strikes
+            </label>
+          )}
+
+          <button
+            onClick={() => run(() => api.approveDespiteFindings(project.id, Array.from(selected), confirmPolicyRisk))}
+            disabled={busy}
+            className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+          >
+            Approve despite findings
+          </button>
+
+          <div>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              placeholder="Notes for a fresh revision attempt"
+              className="w-full rounded border border-border bg-panel2 px-2 py-1 text-xs text-slate-900 dark:text-slate-100"
+            />
+            <div className="mt-1 flex gap-2">
+              <button
+                onClick={() => run(() => api.requestChangesFromReview(project.id, notes.trim()))}
+                disabled={busy || !notes.trim()}
+                className="rounded bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
+              >
+                Request changes
+              </button>
+              <button
+                onClick={() => run(() => api.rejectFromReview(project.id, notes.trim()))}
+                disabled={busy}
+                className="rounded bg-rose-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-600 disabled:opacity-50"
+              >
+                Reject project
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ApprovalQueue() {
   const [projects, setProjects] = useState<Project[]>([]);
+  const [escalatedProjects, setEscalatedProjects] = useState<Project[]>([]);
   const [readyToPublish, setReadyToPublish] = useState<Project[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedTitle, setSelectedTitle] = useState("");
@@ -25,6 +159,7 @@ export default function ApprovalQueue() {
       .listProjects()
       .then((all) => {
         setProjects(all.filter((p) => p.status === "AWAITING_HUMAN_APPROVAL"));
+        setEscalatedProjects(all.filter((p) => p.status === "NEEDS_HUMAN_REVIEW"));
         // docs/DECISIONS_V3.md §4: Approve stops at APPROVED while publishing
         // is frozen - this is where a human downloads + posts manually, then
         // records it via Mark as Published. Full "Approved" queue view
@@ -153,7 +288,7 @@ export default function ApprovalQueue() {
       <div className="flex flex-col gap-2">
         {readyToPublish.map((p) => {
           const entry = publishUrls[p.id] || { platform: "youtube", url: "" };
-          const videoUrl = taskFileUrl(p.task_id, p.video_path);
+          const videoUrl = p.video_url || "";
           return (
             <div key={p.id} className="flex flex-wrap items-center gap-2 rounded border border-border bg-panel p-2">
               <span className="min-w-[10rem] text-sm text-slate-800 dark:text-slate-200">{p.topic || `#${p.id}`}</span>
@@ -193,21 +328,42 @@ export default function ApprovalQueue() {
     </div>
   );
 
+  const escalatedSection = escalatedProjects.length > 0 && (
+    <div className="mb-6">
+      <h2 className="mb-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
+        Needs Your Review ({escalatedProjects.length})
+      </h2>
+      <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+        QA escalated these - the revision budget was exhausted, or a finding recurred that a revision can't fix.
+        The render is preserved and playable; decide below.
+      </p>
+      <div className="flex flex-col gap-3">
+        {escalatedProjects.map((p) => (
+          <EscalatedReviewCard key={p.id} project={p} onResolved={refresh} />
+        ))}
+      </div>
+    </div>
+  );
+
   if (projects.length === 0) {
     return (
       <div>
         <h1 className="mb-4 text-xl font-semibold text-slate-900 dark:text-slate-100">Approval Queue</h1>
+        {escalatedSection}
         {readyToPublishSection}
-        {readyToPublish.length === 0 && <p className="text-slate-500 dark:text-slate-400">Nothing is waiting for approval right now.</p>}
+        {readyToPublish.length === 0 && escalatedProjects.length === 0 && (
+          <p className="text-slate-500 dark:text-slate-400">Nothing is waiting for approval right now.</p>
+        )}
       </div>
     );
   }
 
-  const videoUrl = selected ? taskFileUrl(selected.task_id, selected.video_path) : "";
+  const videoUrl = selected ? selected.video_url || "" : "";
   const pkg = selected?.publish_package;
 
   return (
     <div>
+      {escalatedSection}
       {readyToPublishSection}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
       <div className="lg:col-span-1">
@@ -299,14 +455,23 @@ export default function ApprovalQueue() {
                   {pkg.thumbnail_candidates.map((path, i) => {
                     const url = taskFileUrl(selected.task_id, path);
                     return (
-                      <img
-                        key={i}
-                        src={url}
-                        onClick={() => setSelectedThumb(path)}
-                        className={`h-24 cursor-pointer rounded border-2 object-cover ${
-                          selectedThumb === path ? "border-accent" : "border-transparent"
-                        }`}
-                      />
+                      <div key={i} className="flex flex-col items-center gap-1">
+                        <img
+                          src={url}
+                          onClick={() => setSelectedThumb(path)}
+                          className={`h-24 w-24 cursor-pointer rounded border-2 object-cover ${
+                            selectedThumb === path ? "border-accent" : "border-transparent"
+                          }`}
+                        />
+                        <a
+                          href={url}
+                          download={`thumbnail-${i + 1}.jpg`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-[10px] text-accent hover:underline"
+                        >
+                          Download JPG
+                        </a>
+                      </div>
                     );
                   })}
                 </div>

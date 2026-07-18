@@ -354,6 +354,46 @@ class TestTaskService(unittest.TestCase):
         create_subtitle.assert_not_called()
         whisper_create.assert_not_called()
 
+    def test_get_video_materials_remote_source_returns_paths_and_metadata_as_separate_values(self):
+        # Regression: a real incident had the dict-shaped clip metadata
+        # (search_term/provider/url/local_path) silently clobbered under the
+        # same "materials" task-state key as the plain downloaded-path list,
+        # because MemoryState.update_task() replaces rather than merges (see
+        # get_video_materials' own docstring). storyboard.record_clips() then
+        # crashed on 'str' object has no attribute 'get'. get_video_materials
+        # must hand back the paths and the dict metadata as two distinct
+        # values so nothing downstream can conflate them again.
+        params = VideoParams(video_subject="t", video_source="pexels", match_materials_to_script=True)
+
+        def fake_download_videos(**kwargs):
+            kwargs["metadata_out"].append(
+                {"search_term": "a", "provider": "pexels", "url": "https://x/a.mp4", "local_path": "/tmp/a.mp4"}
+            )
+            return ["/tmp/a.mp4"]
+
+        with patch.object(tm.material, "download_videos", side_effect=fake_download_videos):
+            paths, clip_metadata = tm.get_video_materials("task-x", params, ["a"], 10.0)
+
+        self.assertEqual(paths, ["/tmp/a.mp4"])
+        self.assertTrue(all(isinstance(c, dict) for c in clip_metadata))
+        self.assertEqual(
+            clip_metadata,
+            [{"search_term": "a", "provider": "pexels", "url": "https://x/a.mp4", "local_path": "/tmp/a.mp4"}],
+        )
+
+    def test_get_video_materials_local_source_returns_paths_and_metadata_as_separate_values(self):
+        material_a = MaterialInfo(provider="local", url="/tmp/1.png", duration=0)
+        params = VideoParams(video_subject="t", video_source="local", video_materials=[material_a])
+
+        with patch.object(tm.video, "preprocess_video", return_value=[material_a]):
+            paths, clip_metadata = tm.get_video_materials("task-y", params, [], 10.0)
+
+        self.assertEqual(paths, ["/tmp/1.png"])
+        self.assertTrue(all(isinstance(c, dict) for c in clip_metadata))
+        self.assertEqual(
+            clip_metadata, [{"search_term": "", "provider": "local", "url": "/tmp/1.png", "local_path": "/tmp/1.png"}]
+        )
+
     @unittest.skipUnless(
         RUN_INTEGRATION_TESTS,
         "MPT_RUN_INTEGRATION_TESTS not set",

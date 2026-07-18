@@ -58,12 +58,27 @@ independent sources.
 
 Write up what you recommend, why it fits, and the sources you checked with their URLs."""
 
+_SUPPLEMENT_PROMPT = """A quality reviewer flagged something in a video script as not supported by your earlier
+research dossier for this topic. Use the web_search tool to specifically try to verify it now - search harder
+or from different angles than your first pass. If you can now confirm it (exact wording + attribution for a
+quote, or the fact/claim) from at least 2 independent sources, say so plainly and cite them. If you still
+cannot verify it after searching, or your search actively contradicts it, say that plainly too - do not guess
+or invent a source just to resolve the flag."""
+
 _STRUCTURE_SYSTEM_PROMPT = """Structure the research notes below into the required schema. Only include facts
 and sources that actually appear in the notes - never invent a URL, title, or fact that isn't there. If the
 notes say something couldn't be verified, is disputed, or is a myth to avoid, reflect that honestly via
 confidence/disputed_points rather than smoothing it over. `topic` should be the specific thing you're
 recommending (the quote, the fact, or the news story headline) - concrete enough to become a video's subject,
-not the general niche/theme it came from."""
+not the general niche/theme it came from.
+
+If (and only if) the notes recommend ONE specific, real, attributed quote (motivational-type research),
+populate `verified_quote` with its exact wording and attribution: verification_status="verified" only if the
+notes confirm it from >=2 independent sources with no disagreement; "disputed" if the notes say sources
+conflict or debunk it; "unverified" if the notes could only find one source or recommend a life lesson instead
+(in that case, do not invent a quote to fill this field - leave it unset). This is what downstream QA trusts
+instead of re-deriving its own opinion of the quote's accuracy, so it must accurately reflect what the notes
+actually found - never mark "verified" as a formality."""
 
 
 class Researcher(BaseAgent):
@@ -112,6 +127,31 @@ class Researcher(BaseAgent):
             )
 
         return self._structure_dossier(topic_hint, summary, sources, freshness_window_hours)
+
+    def supplement_verification(self, topic: str, flagged_item: str) -> ResearchDossier:
+        """
+        Incident fix §4: a QA finding whose fix is evidence, not rewriting
+        (attribution uncertainty, a missing citation) routes here for ONE
+        focused re-verification attempt before ever looping back to the
+        Creative Director - who can only reword, not confirm a fact. Returns
+        a dossier built from this focused pass alone; the orchestrator merges
+        it into the project's existing dossier (see
+        orchestrator._merge_supplementary_dossier) rather than replacing it
+        outright, so unrelated already-verified facts survive.
+        """
+        payload = {"topic": topic, "flagged_item": flagged_item}
+        summary, sources, ok = self.call_with_web_search(system=_SUPPLEMENT_PROMPT, user=utils.to_json(payload))
+        if not ok:
+            self.log_event(
+                "error",
+                message="Supplementary verification produced no usable results; flagged item stays unverified",
+            )
+            return ResearchDossier(
+                topic=topic,
+                why_now="Supplementary verification could not confirm the flagged item.",
+                reduced_verification=True,
+            )
+        return self._structure_dossier(topic, summary, sources, None)
 
     def _add_supplementary_signals(self, payload: dict, content_type_id: str, query: str) -> None:
         """

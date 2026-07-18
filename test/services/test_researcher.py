@@ -90,6 +90,34 @@ class TestResearcherResearch(unittest.TestCase):
         self.assertEqual(dossier.freshness_window_hours, 24)
 
 
+class TestResearcherSupplementVerification(unittest.TestCase):
+    """
+    Incident fix §4: a QA finding whose fix is evidence (attribution
+    uncertainty, missing citation) routes to the Researcher for ONE focused
+    re-verification pass before ever reaching the Creative Director.
+    """
+
+    def test_successful_supplement_returns_a_structured_dossier(self):
+        researcher = Researcher(project_id=None)
+        structured = ResearchDossier(topic="t", why_now="confirmed on second look")
+        with patch.object(
+            researcher, "call_with_web_search", return_value=("confirmed from two more sources", [], True)
+        ) as mock_search, patch.object(researcher, "call_json", return_value=structured):
+            dossier = researcher.supplement_verification(topic="t", flagged_item="the quote's attribution")
+
+        self.assertEqual(dossier.why_now, "confirmed on second look")
+        args, kwargs = mock_search.call_args
+        self.assertIn("the quote's attribution", kwargs["user"])
+
+    def test_failed_supplement_returns_reduced_verification_without_raising(self):
+        researcher = Researcher(project_id=None)
+        with patch.object(researcher, "call_with_web_search", return_value=("", [], False)):
+            dossier = researcher.supplement_verification(topic="t", flagged_item="an unverifiable claim")
+
+        self.assertTrue(dossier.reduced_verification)
+        self.assertEqual(dossier.topic, "t")
+
+
 class TestResearcherSupplementarySignals(unittest.TestCase):
     """docs/DECISIONS_V3.md §6: free supplementary signals, additive to the primary web-search call."""
 

@@ -14,7 +14,7 @@ from app.controllers.v1.base import new_router
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, VideoProject
 from app.models.exception import HttpException
-from app.services import project_deletion, project_storage
+from app.services import project_deletion, project_storage, rescue
 from app.utils import file_security, utils
 
 router = new_router()
@@ -83,9 +83,16 @@ def create_project(request: Request, body: CreateProjectRequest):
 
     if body.content_type_id is not None:
         with session_scope() as session:
-            if session.get(ContentTypeTemplate, body.content_type_id) is None:
+            template = session.get(ContentTypeTemplate, body.content_type_id)
+            if template is None:
                 raise HttpException(
                     task_id="", status_code=404, message=f"content type {body.content_type_id!r} not found"
+                )
+            if not template.enabled:
+                raise HttpException(
+                    task_id="",
+                    status_code=400,
+                    message=f"content type {body.content_type_id!r} is disabled and cannot be used for new projects",
                 )
 
     series_id, episode_number = _resolve_series(body)
@@ -122,8 +129,11 @@ def _resolve_series(body: CreateProjectRequest) -> tuple:
         title = (body.series_title or "").strip()
         if not title:
             raise HttpException(task_id="", status_code=400, message="series_title is required for series_mode='new'")
-        content_type_id = body.content_type_id or "motivational"
-        series_id = orchestrator.create_series(content_type_id, title)
+        if not body.content_type_id:
+            raise HttpException(
+                task_id="", status_code=400, message="content_type_id is required for series_mode='new'"
+            )
+        series_id = orchestrator.create_series(body.content_type_id, title)
         return series_id, orchestrator.next_episode_number(series_id)
 
     # series_mode == "continue"
@@ -175,6 +185,54 @@ def retry_project(request: Request, project_id: int = Path(...)):
     except PermissionError as exc:
         raise HttpException(task_id="", status_code=409, message=str(exc))
     return utils.get_response(200, {"project_id": project_id})
+
+
+def _rescue_candidate_summary(candidate) -> dict:
+    return {
+        "id": candidate.id,
+        "label": candidate.label,
+        "recorded_at": candidate.recorded_at.isoformat() if candidate.recorded_at else None,
+    }
+
+
+@router.get(
+    "/projects/{project_id}/rescue-eligibility",
+    summary="Check (fresh, not cached) whether a Failed project has a usable render that can be rescued",
+)
+def get_rescue_eligibility(request: Request, project_id: int = Path(...)):
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise HttpException(task_id="", status_code=404, message=f"project {project_id} not found")
+        eligibility = rescue.evaluate_rescuability(project)
+    rescue.store_rescuability(project_id, eligibility)
+    return utils.get_response(
+        200,
+        {
+            "project_id": project_id,
+            "eligible": eligibility.eligible,
+            "reason": eligibility.reason,
+            "candidates": [_rescue_candidate_summary(c) for c in eligibility.candidates],
+        },
+    )
+
+
+class RescueProjectRequest(BaseModel):
+    candidate_id: Optional[str] = None
+
+
+@router.post(
+    "/projects/{project_id}/rescue",
+    summary="Override a Failed project's status: move a usable render into the human-review flow",
+)
+def rescue_project(request: Request, body: RescueProjectRequest, project_id: int = Path(...)):
+    try:
+        result = orchestrator.rescue_failed_project(project_id, body.candidate_id)
+    except ValueError as exc:
+        raise HttpException(task_id="", status_code=404, message=str(exc))
+    except PermissionError as exc:
+        raise HttpException(task_id="", status_code=409, message=str(exc))
+    return utils.get_response(200, result)
 
 
 @router.post(
@@ -232,6 +290,61 @@ def reject_script(request: Request, body: RejectScriptRequest, project_id: int =
 def regenerate_script(request: Request, body: RegenerateScriptRequest, project_id: int = Path(...)):
     try:
         orchestrator.regenerate_script(project_id, (body.notes or "").strip())
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise _script_gate_error(exc)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+class ApproveDespiteFindingsRequest(BaseModel):
+    overridden_fingerprints: List[str] = []
+    # Required when any overridden finding is a content-policy finding - an
+    # explicit acknowledgement that this may risk platform strikes.
+    confirm_policy_risk: bool = False
+
+
+class RequestChangesFromReviewRequest(BaseModel):
+    notes: str
+
+
+class RejectFromReviewRequest(BaseModel):
+    notes: Optional[str] = ""
+
+
+@router.post(
+    "/projects/{project_id}/needs-review/approve",
+    summary="Approve an escalated (NEEDS_HUMAN_REVIEW) project despite outstanding QA findings",
+)
+def approve_despite_findings(request: Request, body: ApproveDespiteFindingsRequest, project_id: int = Path(...)):
+    try:
+        orchestrator.approve_despite_findings(
+            project_id, body.overridden_fingerprints, body.confirm_policy_risk
+        )
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise _script_gate_error(exc)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post(
+    "/projects/{project_id}/needs-review/request-changes",
+    summary="Send an escalated (NEEDS_HUMAN_REVIEW) project back into production with a fresh revision budget",
+)
+def request_changes_from_review(request: Request, body: RequestChangesFromReviewRequest, project_id: int = Path(...)):
+    if not body.notes.strip():
+        raise HttpException(task_id="", status_code=400, message="notes must not be empty")
+    try:
+        orchestrator.request_changes_from_review(project_id, body.notes.strip())
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        raise _script_gate_error(exc)
+    return utils.get_response(200, {"project_id": project_id})
+
+
+@router.post(
+    "/projects/{project_id}/needs-review/reject",
+    summary="Reject an escalated (NEEDS_HUMAN_REVIEW) project - terminal, but nothing on disk is deleted",
+)
+def reject_from_review(request: Request, body: RejectFromReviewRequest, project_id: int = Path(...)):
+    try:
+        orchestrator.reject_from_review(project_id, (body.notes or "").strip())
     except (ValueError, PermissionError, RuntimeError) as exc:
         raise _script_gate_error(exc)
     return utils.get_response(200, {"project_id": project_id})
@@ -355,6 +468,43 @@ def get_project(request: Request, project_id: int = Path(...)):
     return utils.get_response(200, data)
 
 
+def _resolve_video_url(project: VideoProject) -> Optional[str]:
+    """
+    Builds a URL the frontend can actually stream project.video_path from.
+    In the regular pipeline, video_path never changes after Producer.run()
+    first sets it, so it always lives under storage/tasks/{task_id}/ and the
+    legacy /tasks/{task_id}/{filename} route (matching the frontend's
+    taskFileUrl helper) always works. A rescued project
+    (orchestrator.rescue_failed_project) can instead point video_path at a
+    render inside the project's OWN storage folder - its current
+    final-video.mp4, or an archived revisions/{timestamp}/final-video.mp4 -
+    which that legacy route can't serve (wrong directory entirely, not just
+    a different filename). Prefer the project-scoped /files/ route whenever
+    video_path actually resolves inside the project's own folder; fall back
+    to the legacy task route otherwise.
+    """
+    if not project.video_path:
+        return None
+    abs_dir = project_storage.project_abs_dir(project.id)
+    if abs_dir:
+        # realpath both sides before computing the relative path - abs_dir
+        # itself may cross a symlink (e.g. macOS's /var -> /private/var),
+        # and resolve_path_within_directory always returns a realpath'd
+        # result, so comparing against a non-realpath'd abs_dir produces a
+        # bogus "../../.." relative path instead of the real one.
+        abs_dir_real = os.path.realpath(abs_dir)
+        try:
+            resolved = file_security.resolve_path_within_directory(abs_dir, project.video_path)
+        except ValueError:
+            resolved = None
+        if resolved:
+            relative = os.path.relpath(resolved, abs_dir_real)
+            return f"/api/v1/projects/{project.id}/files/{relative}"
+    if project.task_id:
+        return f"/tasks/{project.task_id}/{os.path.basename(project.video_path)}"
+    return None
+
+
 def _project_summary(project: VideoProject) -> dict:
     return {
         "id": project.id,
@@ -369,6 +519,7 @@ def _project_summary(project: VideoProject) -> dict:
         "published_posts": project.published_posts,
         "task_id": project.task_id,
         "video_path": project.video_path,
+        "video_url": _resolve_video_url(project),
         "storage_path": project.storage_path,
         "cost_usd": project.cost_usd,
         "revision_count": project.revision_count,
@@ -379,6 +530,14 @@ def _project_summary(project: VideoProject) -> dict:
         "episode_number": project.episode_number,
         "approval_mode": project.approval_mode,
         "script_revision_count": project.script_revision_count,
+        "escalation_reason": project.escalation_reason,
+        "overridden_findings": project.overridden_findings,
+        "script_verification_warning": project.script_verification_warning,
+        "rescue_eligible": project.rescue_eligible,
+        "rescue_checked_at": project.rescue_checked_at.isoformat() if project.rescue_checked_at else None,
+        "rescue_ineligible_reason": project.rescue_ineligible_reason,
+        "rescue_candidate_label": project.rescue_candidate_label,
+        "rescue_history": project.rescue_history,
         "created_at": project.created_at.isoformat(),
         "updated_at": project.updated_at.isoformat(),
     }

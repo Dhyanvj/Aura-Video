@@ -13,7 +13,20 @@ import app.db.session as db_session
 from app.agents import base as agent_base
 from app.agents import orchestrator
 from app.agents.researcher import Researcher
-from app.agents.schemas import CreativeBrief, MetadataDraft, QAReport, ResearchDossier, TrendIdea, TrendReport
+from app.agents.schemas import (
+    CreativeBrief,
+    FactCheckResult,
+    Finding,
+    FrameFinding,
+    MetadataDraft,
+    QAReport,
+    QuoteOrLesson,
+    ResearchDossier,
+    TrendIdea,
+    TrendReport,
+    VerifiedQuote,
+    VisionReview,
+)
 from app.agents.trend_scout import TrendScout
 from app.config import config
 from app.db import session_scope
@@ -142,6 +155,53 @@ class TestOrchestratorStateMachine(_AutomaticApprovalModeMixin, IsolatedStorageD
             events = session.exec(select(AgentEvent).where(AgentEvent.project_id == project_id)).all()
         self.assertTrue(any("invalid voice" in e.message for e in events))
 
+    def test_video_params_carry_the_content_types_music_palette(self):
+        # Different content types must end up with different bgm_palette
+        # values so get_bgm_file() (app/services/video.py) actually draws
+        # from a different pool of tracks per content type, instead of every
+        # video using the same random-over-everything BGM selection.
+        with session_scope() as session:
+            ai_news_project = VideoProject(
+                status=ProjectStatus.SCRIPTING.value, topic="t", niche="n", content_type_id="ai_news"
+            )
+            motivational_project = VideoProject(
+                status=ProjectStatus.SCRIPTING.value, topic="t", niche="n", content_type_id="motivational"
+            )
+            session.add(ai_news_project)
+            session.add(motivational_project)
+            session.commit()
+            session.refresh(ai_news_project)
+            session.refresh(motivational_project)
+            ai_news_project_id = ai_news_project.id
+            motivational_project_id = motivational_project.id
+
+        brief = _fake_brief()
+        ai_news_params = orchestrator._video_params_from_brief(ai_news_project_id, "topic", brief)
+        motivational_params = orchestrator._video_params_from_brief(motivational_project_id, "topic", brief)
+
+        self.assertEqual(ai_news_params.bgm_palette, "tech_energetic")
+        self.assertEqual(motivational_params.bgm_palette, "cinematic_uplifting")
+        self.assertNotEqual(ai_news_params.bgm_palette, motivational_params.bgm_palette)
+
+    def test_write_brief_passes_content_types_voice_style_to_creative_director(self):
+        # voice_style (app/db/models.py ContentTypeTemplate) previously sat
+        # unused in the DB; it must now reach the Creative Director so the
+        # recommended voice actually reflects the content type's intended
+        # tone (e.g. AI News: confident/energetic vs. World News: sober).
+        with session_scope() as session:
+            project = VideoProject(status=ProjectStatus.SCRIPTING.value, topic="t", niche="n", content_type_id="ai_news")
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            project_id = project.id
+
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ) as mock_write:
+            orchestrator._write_brief(project_id, "topic", "niche", revision_notes=None)
+
+        self.assertIn("confident, energetic", mock_write.call_args.kwargs["voice_style"])
+
     def test_full_pipeline_reaches_awaiting_human_approval_on_qa_pass(self):
         with patch.object(agent_base, "is_configured", return_value=True), patch(
             "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
@@ -220,29 +280,74 @@ class TestOrchestratorStateMachine(_AutomaticApprovalModeMixin, IsolatedStorageD
         # The current (second) render's video is present at the top level, not archived.
         self.assertTrue(os.path.isfile(os.path.join(abs_dir, "final-video.mp4")))
 
-    def test_revision_loop_caps_at_max_revisions_and_escalates(self):
-        # A missing rendered file means QA can't extract frames, so it always
-        # reports "revise"/revision_target="producer" (see
-        # QualityReviewer.review's no-frames fallback) - this exercises the
-        # materials-only revision path (revise_search_terms), not a full
-        # Creative Director rewrite.
+    def test_repeated_qa_finding_short_circuits_to_needs_human_review_without_exhausting_revisions(self):
+        # A missing rendered file means QA can't extract frames and fails the
+        # same deterministic file_exists check every round (see
+        # QualityReviewer.review's no-frames fallback) - the SAME finding
+        # fingerprint recurring after a revision means a revision cannot
+        # resolve it (incident fix §4), so this escalates to
+        # NEEDS_HUMAN_REVIEW after just one wasted revision attempt, well
+        # short of the max_revisions=2 budget.
         with patch.object(agent_base, "is_configured", return_value=True), patch(
             "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
         ), patch(
             "app.agents.creative_director.CreativeDirector.revise_search_terms", return_value=["clip a", "clip b"]
         ), patch("app.agents.producer.task_service.start", side_effect=_fake_render_success):
             project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
-            self._wait_for_status(project_id, {ProjectStatus.FAILED.value})
+            self._wait_for_status(project_id, {ProjectStatus.NEEDS_HUMAN_REVIEW.value, ProjectStatus.FAILED.value})
 
         project = self._get_project(project_id)
-        self.assertEqual(project.status, ProjectStatus.FAILED.value)
-        # Missing video -> QA always reports "revise"; max_revisions=2 means
-        # 1 initial attempt + 2 revisions = 3 QA reports before escalating.
-        self.assertEqual(project.revision_count, 2)
-        self.assertEqual(len(project.qa_reports), 3)
-        self.assertIn("limit (2)", project.failure_reason)
+        self.assertEqual(project.status, ProjectStatus.NEEDS_HUMAN_REVIEW.value)
+        self.assertEqual(project.revision_count, 1)
+        self.assertEqual(len(project.qa_reports), 2)
+        self.assertIn("recurred", project.escalation_reason)
+        self.assertIsNone(project.failure_reason)
         # The script itself was never rewritten - only search terms changed.
         self.assertEqual(project.brief["script"], _fake_brief().script)
+
+    def test_revision_loop_caps_at_max_revisions_and_escalates_to_needs_human_review(self):
+        # Each round's QA finding has a distinct fingerprint (a different
+        # problem flagged each time), so the repeated-fingerprint short-
+        # circuit never fires - this exercises genuinely exhausting the
+        # automatic revision budget. FAILED must never be reached from a QA
+        # outcome (incident fix §2) - only NEEDS_HUMAN_REVIEW, with the
+        # rendered video preserved and playable.
+        qa_reports = [
+            QAReport(
+                overall="revise",
+                technical_checks=[],
+                frame_findings=[],
+                revision_target="producer",
+                revision_notes=f"issue #{i}",
+                findings=[
+                    Finding(
+                        category="visual",
+                        fingerprint=f"visual:issue-{i}",
+                        severity="major",
+                        message=f"issue #{i}",
+                        revision_target="producer",
+                    )
+                ],
+            )
+            for i in range(3)
+        ]
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.revise_search_terms", return_value=["clip a", "clip b"]
+        ), patch("app.agents.producer.task_service.start", side_effect=_fake_render_success), patch(
+            "app.agents.quality_reviewer.QualityReviewer.review", side_effect=qa_reports
+        ):
+            project_id = orchestrator.start_manual_project(topic="a topic", niche="a niche")
+            self._wait_for_status(project_id, {ProjectStatus.NEEDS_HUMAN_REVIEW.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.NEEDS_HUMAN_REVIEW.value)
+        self.assertEqual(project.revision_count, 2)
+        self.assertEqual(len(project.qa_reports), 3)
+        self.assertIn("limit (2)", project.escalation_reason)
+        self.assertIsNone(project.failure_reason)
+        self.assertIsNotNone(project.video_path)
 
     def test_materials_only_revision_keeps_script_and_succeeds_on_second_attempt(self):
         # revision_target="producer" must not throw away a working script -
@@ -342,10 +447,15 @@ class TestOrchestratorStateMachine(_AutomaticApprovalModeMixin, IsolatedStorageD
             "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
         ), patch("app.agents.producer.task_service.start", side_effect=_fake_render_success):
             orchestrator.resume_incomplete_projects()
-            self._wait_for_status(project_id, {ProjectStatus.FAILED.value})
+            # The missing rendered file fails the same deterministic technical
+            # check every round, so the repeated-fingerprint short-circuit
+            # (incident fix §4) escalates to NEEDS_HUMAN_REVIEW well before
+            # exhausting the revision budget - a QA outcome must never reach
+            # FAILED (incident fix §2).
+            self._wait_for_status(project_id, {ProjectStatus.NEEDS_HUMAN_REVIEW.value, ProjectStatus.FAILED.value})
 
         project = self._get_project(project_id)
-        self.assertEqual(project.status, ProjectStatus.FAILED.value)
+        self.assertEqual(project.status, ProjectStatus.NEEDS_HUMAN_REVIEW.value)
         self.assertIsNotNone(project.brief)  # Creative Director actually reran
 
         untouched = self._get_project(done_project_id)
@@ -767,6 +877,417 @@ class TestCancellationCheckpoints(_AutomaticApprovalModeMixin, IsolatedStorageDi
         project = self._get_project(project_id)
         self.assertEqual(project.status, ProjectStatus.SCRIPT_READY.value)
         self.assertFalse(project.cancel_requested)
+
+
+def _tsiolkovsky_brief() -> CreativeBrief:
+    return CreativeBrief(
+        script=(
+            "Ever feel like you're stuck exactly where you started? Konstantin Tsiolkovsky once said: "
+            '"Earth is the cradle of humanity, but one cannot live in a cradle forever." He wasn\'t just '
+            "talking about rockets - every comfort zone was meant to raise you, not cage you. Outgrow it "
+            "today."
+        ),
+        search_terms=["rocket launch", "earth from space"],
+        music_direction="calm, cinematic",
+        bgm_file=None,
+        voice_recommendation="en-US-GuyNeural-Male",
+        subtitle_style="bottom, bold",
+        metadata_draft=MetadataDraft(working_title="Outgrow Your Cradle", hook_variants=["hook"]),
+        quote_or_lesson=QuoteOrLesson(
+            is_quote=True,
+            text="Earth is the cradle of humanity, but one cannot live in a cradle forever.",
+            attribution="Konstantin Tsiolkovsky",
+        ),
+    )
+
+
+def _tsiolkovsky_dossier() -> ResearchDossier:
+    return ResearchDossier(
+        topic="Konstantin Tsiolkovsky on outgrowing comfort zones",
+        verified_quote=VerifiedQuote(
+            text="Earth is the cradle of humanity, but one cannot live in a cradle forever.",
+            attribution="Konstantin Tsiolkovsky",
+            verification_status="verified",
+        ),
+    )
+
+
+class TestIncidentReplayMotivationalQuoteEscalation(_AutomaticApprovalModeMixin, IsolatedStorageDirMixin, unittest.TestCase):
+    """
+    Reconstructs the real incident this whole redesign is fixing: a
+    Motivational Quotes video with a correctly-attributed, Researcher-
+    verified quote, rejected twice by the old QA design for a re-litigated
+    "uncertain" attribution and flagged "unsupported interpretations" on the
+    unpacking lines - both of which the new calibration must not do. Only
+    the genuinely minor visual notes (a slightly dark final frame, subtitle
+    contrast) should surface, as warnings, never as a block.
+    """
+
+    def setUp(self):
+        super().setUp()
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+        self._start_isolated_storage_dir()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        self._stop_isolated_storage_dir()
+        super().tearDown()
+
+    def _get_project(self, project_id: int) -> VideoProject:
+        with session_scope() as session:
+            return session.get(VideoProject, project_id)
+
+    def _wait_for_status(self, project_id: int, terminal_statuses: set, timeout: float = 30.0):
+        import time
+
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            status = self._get_project(project_id).status
+            if status in terminal_statuses:
+                return status
+            time.sleep(0.1)
+        self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
+
+    def _fake_render_pass(self, task_id, params, stop_at="video"):
+        import subprocess
+
+        video_path = os.path.join(tempfile.gettempdir(), f"{task_id}.mp4")
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=1080x1920:rate=24:duration=20",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=20",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", video_path,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+        self.addCleanup(lambda: os.path.exists(video_path) and os.remove(video_path))
+        sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=5)
+        for progress in (10, 50, 100):
+            sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=progress)
+        sm.state.update_task(
+            task_id, state=const.TASK_STATE_COMPLETE, progress=100, videos=[video_path], subtitle_path=None
+        )
+
+    def test_incident_replay_ends_in_final_review_with_warnings_never_failed(self):
+        incident_vision = VisionReview(
+            overall="pass",
+            frame_findings=[
+                FrameFinding(frame_index=0, matches_script=True, notes="ok"),
+                FrameFinding(
+                    frame_index=7,
+                    matches_script=True,
+                    issues=["final frame a bit dark"],
+                    notes="still clearly visible, just not ideal",
+                    severity="minor",
+                    justification="polish preference, not a real problem",
+                ),
+                FrameFinding(
+                    frame_index=6,
+                    matches_script=True,
+                    issues=["subtitle contrast could be better"],
+                    notes="text is still legible",
+                    severity="minor",
+                    justification="polish preference, not a real problem",
+                ),
+            ],
+        )
+
+        def _fake_llm_call(*args, **kwargs):
+            response_model = kwargs.get("response_model")
+            if response_model is None and len(args) >= 3:
+                response_model = args[2]
+            if response_model is VisionReview:
+                return incident_vision
+            if response_model is FactCheckResult:
+                # The properly-calibrated, content-type-aware fact-checker
+                # does not flag the quote's unpacking/interpretation lines -
+                # that was exactly the old design's bug.
+                return FactCheckResult(flags=[])
+            raise AssertionError(f"unexpected response_model {response_model!r}")
+
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=_tsiolkovsky_dossier()
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_tsiolkovsky_brief()
+        ), patch(
+            "app.agents.producer.task_service.start", side_effect=self._fake_render_pass
+        ), patch(
+            "app.agents.base.BaseAgent.call_json_with_content", side_effect=_fake_llm_call
+        ), patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            project_id = orchestrator.start_manual_project(
+                topic="Tsiolkovsky quote", niche="motivation", content_type_id="motivational"
+            )
+            self._wait_for_status(
+                project_id,
+                {
+                    ProjectStatus.AWAITING_HUMAN_APPROVAL.value,
+                    ProjectStatus.NEEDS_HUMAN_REVIEW.value,
+                    ProjectStatus.FAILED.value,
+                },
+            )
+
+        project = self._get_project(project_id)
+        self.assertNotEqual(project.status, ProjectStatus.FAILED.value)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+        self.assertIsNotNone(project.video_path)
+        self.assertTrue(os.path.isfile(project.video_path))
+        self.assertEqual(len(project.qa_reports), 1)
+        self.assertEqual(project.qa_reports[0]["overall"], "pass_with_warnings")
+
+
+class TestScriptGateQuoteVerification(_AutomaticApprovalModeMixin, IsolatedStorageDirMixin, unittest.TestCase):
+    """Incident fix §3: an unverifiable quote must be caught at the script gate, before any render happens."""
+
+    def setUp(self):
+        super().setUp()
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+        self._start_isolated_storage_dir()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        self._stop_isolated_storage_dir()
+        super().tearDown()
+
+    def _get_project(self, project_id: int) -> VideoProject:
+        with session_scope() as session:
+            return session.get(VideoProject, project_id)
+
+    def _wait_for_status(self, project_id: int, terminal_statuses: set, timeout: float = 30.0):
+        import time
+
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            status = self._get_project(project_id).status
+            if status in terminal_statuses:
+                return status
+            time.sleep(0.1)
+        self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
+
+    def test_unverifiable_quote_is_caught_at_script_gate_before_any_render(self):
+        # No verified_quote in the dossier at all - the Creative Director's
+        # own attempt (both the original and the one free rewrite) claims a
+        # quote the Researcher never confirmed.
+        dossier = ResearchDossier(topic="a life lesson topic")
+        bad_brief = CreativeBrief(
+            script="Some script asserting an unverifiable quote.",
+            search_terms=["a"],
+            music_direction="calm",
+            bgm_file=None,
+            voice_recommendation="en-US-GuyNeural-Male",
+            subtitle_style="bottom",
+            metadata_draft=MetadataDraft(working_title="t", hook_variants=[]),
+            quote_or_lesson=QuoteOrLesson(is_quote=True, text="Some unverifiable quote.", attribution="Nobody Famous"),
+        )
+
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=dossier
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=bad_brief
+        ) as mock_write, patch("app.agents.producer.task_service.start") as mock_start:
+            project_id = orchestrator.start_manual_project(
+                topic="a quote topic", niche="motivation", content_type_id="motivational"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.AWAITING_SCRIPT_APPROVAL.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        # Automatic approval mode is forced by _AutomaticApprovalModeMixin,
+        # yet the project still stops here - an unverified quote overrides
+        # automatic mode's normal skip-through.
+        self.assertEqual(project.status, ProjectStatus.AWAITING_SCRIPT_APPROVAL.value)
+        self.assertIsNotNone(project.script_verification_warning)
+        mock_start.assert_not_called()  # no render ever happened
+        self.assertEqual(mock_write.call_count, 2)  # original attempt + one free rewrite
+
+    def test_dossier_verified_quote_proceeds_without_a_warning(self):
+        with patch.object(agent_base, "is_configured", return_value=True), patch.object(
+            Researcher, "research", return_value=_tsiolkovsky_dossier()
+        ), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_tsiolkovsky_brief()
+        ) as mock_write, patch.object(orchestrator, "_produce_and_review"):
+            project_id = orchestrator.start_manual_project(
+                topic="Tsiolkovsky quote", niche="motivation", content_type_id="motivational"
+            )
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.SCRIPT_READY.value)
+        self.assertIsNone(project.script_verification_warning)
+        mock_write.assert_called_once()  # no rewrite needed - verified on the first attempt
+
+
+class TestNeedsHumanReviewActions(IsolatedStorageDirMixin, unittest.TestCase):
+    """Human actions available at NEEDS_HUMAN_REVIEW: approve despite findings, request changes, reject."""
+
+    def setUp(self):
+        super().setUp()
+        fd, self._db_path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        self._original_engine = db_session.engine
+        db_session.engine = create_engine(f"sqlite:///{self._db_path}", connect_args={"check_same_thread": False})
+        db_session.init_db()
+        self._start_isolated_storage_dir()
+
+    def tearDown(self):
+        db_session.engine = self._original_engine
+        self._stop_isolated_storage_dir()
+        super().tearDown()
+
+    def _get_project(self, project_id: int) -> VideoProject:
+        with session_scope() as session:
+            return session.get(VideoProject, project_id)
+
+    def _wait_for_status(self, project_id: int, terminal_statuses: set, timeout: float = 30.0):
+        import time
+
+        deadline = time.time() + timeout
+        status = None
+        while time.time() < deadline:
+            status = self._get_project(project_id).status
+            if status in terminal_statuses:
+                return status
+            time.sleep(0.1)
+        self.fail(f"project {project_id} never reached {terminal_statuses}, stuck at {status}")
+
+    def _create_needs_review_project(self, findings=None) -> int:
+        findings = (
+            findings
+            if findings is not None
+            else [
+                {
+                    "category": "visual",
+                    "fingerprint": "visual:frame1",
+                    "severity": "major",
+                    "message": "mismatch",
+                    "overridable": True,
+                }
+            ]
+        )
+        qa_report = {
+            "overall": "revise",
+            "technical_checks": [],
+            "frame_findings": [],
+            "content_policy_flags": [],
+            "revision_target": "producer",
+            "revision_notes": "n",
+            "fact_check_flags": [],
+            "script_repetition_flag": None,
+            "findings": findings,
+        }
+        with session_scope() as session:
+            project = VideoProject(
+                status=ProjectStatus.NEEDS_HUMAN_REVIEW.value,
+                topic="t",
+                niche="n",
+                video_path="/tmp/does-not-exist-final.mp4",
+                brief=_fake_brief().model_dump(),
+                qa_reports=[qa_report],
+                revision_count=2,
+                escalation_reason="revision limit (2) reached",
+            )
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            return project.id
+
+    def test_approve_despite_findings_records_override_and_advances_to_awaiting_human_approval(self):
+        project_id = self._create_needs_review_project()
+        with patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            orchestrator.approve_despite_findings(project_id, overridden_fingerprints=["visual:frame1"])
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+        self.assertEqual(len(project.overridden_findings), 1)
+        self.assertEqual(project.overridden_findings[0]["fingerprints"], ["visual:frame1"])
+        self.assertIsNone(project.escalation_reason)
+
+    def test_approve_despite_findings_rejects_non_overridable_hard_technical_critical(self):
+        project_id = self._create_needs_review_project(
+            findings=[
+                {
+                    "category": "technical",
+                    "fingerprint": "technical:audio_present",
+                    "severity": "critical",
+                    "message": "no audio",
+                    "overridable": False,
+                }
+            ]
+        )
+        with self.assertRaises(PermissionError):
+            orchestrator.approve_despite_findings(project_id, overridden_fingerprints=["technical:audio_present"])
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.NEEDS_HUMAN_REVIEW.value)
+
+    def test_approve_despite_findings_requires_explicit_confirmation_for_policy_findings(self):
+        project_id = self._create_needs_review_project(
+            findings=[
+                {
+                    "category": "content_policy",
+                    "fingerprint": "content_policy:medical-claim",
+                    "severity": "critical",
+                    "message": "medical claim",
+                    "overridable": True,
+                }
+            ]
+        )
+        with self.assertRaises(PermissionError):
+            orchestrator.approve_despite_findings(project_id, overridden_fingerprints=["content_policy:medical-claim"])
+
+        with patch(
+            "app.agents.publisher.Publisher.prepare",
+            return_value={"title_options": ["a", "b", "c"], "thumbnail_candidates": []},
+        ):
+            orchestrator.approve_despite_findings(
+                project_id, overridden_fingerprints=["content_policy:medical-claim"], confirm_policy_risk=True
+            )
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.AWAITING_HUMAN_APPROVAL.value)
+
+    def test_approve_despite_findings_requires_needs_human_review_status(self):
+        with session_scope() as session:
+            project = VideoProject(status=ProjectStatus.FAILED.value, topic="t", niche="n")
+            session.add(project)
+            session.commit()
+            session.refresh(project)
+            project_id = project.id
+        with self.assertRaises(PermissionError):
+            orchestrator.approve_despite_findings(project_id)
+
+    def test_request_changes_from_review_resets_revision_budget_and_reenters_production(self):
+        project_id = self._create_needs_review_project()
+        with patch.object(agent_base, "is_configured", return_value=True), patch(
+            "app.agents.creative_director.CreativeDirector.write", return_value=_fake_brief()
+        ), patch.object(orchestrator, "_produce_and_review"):
+            orchestrator.request_changes_from_review(project_id, "please fix the visuals")
+            self._wait_for_status(project_id, {ProjectStatus.SCRIPT_READY.value, ProjectStatus.FAILED.value})
+
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.SCRIPT_READY.value)
+        self.assertEqual(project.revision_count, 0)
+        self.assertIsNone(project.escalation_reason)
+
+    def test_reject_from_review_is_terminal_and_preserves_the_video_reference(self):
+        project_id = self._create_needs_review_project()
+        orchestrator.reject_from_review(project_id, "not good enough")
+        project = self._get_project(project_id)
+        self.assertEqual(project.status, ProjectStatus.REJECTED.value)
+        self.assertEqual(project.video_path, "/tmp/does-not-exist-final.mp4")
 
 
 if __name__ == "__main__":

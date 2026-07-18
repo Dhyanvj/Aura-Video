@@ -364,7 +364,7 @@ def list_recycle_bin() -> list:
             if retention_days > 0:
                 expires_at = deleted_at + timedelta(days=retention_days)
                 days_remaining = max(0, (expires_at - utcnow()).days)
-            thumbnail = os.path.join(abs_dir, "thumbnail.png") if abs_dir else None
+            thumbnail = os.path.join(abs_dir, "thumbnail.jpg") if abs_dir else None
             items.append(
                 {
                     "id": project.id,

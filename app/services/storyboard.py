@@ -32,20 +32,35 @@ def record_clips(project_id: int, clip_metadata: List[dict]) -> None:
     Called after every render (initial or a full re-render), so it always
     reflects final-video.mp4 - stale entries from a prior render must not
     linger and be mistaken for the current storyboard.
+
+    Each entry is expected to be a dict (search_term/provider/url/local_path).
+    A malformed entry (e.g. a plain string, from an upstream key mixup - see
+    the regression this guards against in task.py's get_video_materials) is
+    skipped with a warning rather than raising, so one bad entry doesn't
+    lose the whole storyboard for an otherwise-successful render; the caller
+    (orchestrator._record_clip_index) already treats this whole function as
+    non-blocking, but this keeps the function itself defensive too.
     """
     with session_scope() as session:
         session.exec(delete(ProjectClip).where(ProjectClip.project_id == project_id))
-        for index, clip in enumerate(clip_metadata or []):
+        index = 0
+        for raw_clip in clip_metadata or []:
+            if not isinstance(raw_clip, dict):
+                logger.warning(
+                    f"project {project_id}: clip metadata entry is a {type(raw_clip).__name__}, not a dict; skipping"
+                )
+                continue
             session.add(
                 ProjectClip(
                     project_id=project_id,
                     index=index,
-                    search_term=clip.get("search_term", ""),
-                    provider=clip.get("provider", ""),
-                    source_url=clip.get("url", ""),
-                    local_path=clip.get("local_path", ""),
+                    search_term=raw_clip.get("search_term", ""),
+                    provider=raw_clip.get("provider", ""),
+                    source_url=raw_clip.get("url", ""),
+                    local_path=raw_clip.get("local_path", ""),
                 )
             )
+            index += 1
         session.commit()
 
 

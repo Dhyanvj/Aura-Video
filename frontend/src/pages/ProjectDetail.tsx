@@ -5,6 +5,7 @@ import { useLiveUpdates } from "../ws";
 import StatusBadge from "../components/StatusBadge";
 import ProjectTimeline from "../components/ProjectTimeline";
 import ScriptReviewPanel from "../components/ScriptReviewPanel";
+import RescuePanel from "../components/RescuePanel";
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -28,7 +29,7 @@ export default function ProjectDetail() {
   if (error) return <div className="rounded bg-rose-100 dark:bg-rose-950/50 p-4 text-rose-700 dark:text-rose-300">{error}</div>;
   if (!project) return <div className="text-slate-500 dark:text-slate-400">Loading...</div>;
 
-  const videoUrl = taskFileUrl(project.task_id, project.video_path);
+  const videoUrl = project.video_url || "";
 
   const deleteProject = async (permanent: boolean) => {
     const publishedWarning =
@@ -87,12 +88,19 @@ export default function ProjectDetail() {
       {project.failure_reason && (
         <div className="mb-6 rounded bg-rose-100 dark:bg-rose-950/50 p-3 text-sm text-rose-700 dark:text-rose-300">{project.failure_reason}</div>
       )}
+      {project.escalation_reason && (
+        <div className="mb-6 rounded bg-orange-100 dark:bg-orange-950/50 p-3 text-sm text-orange-700 dark:text-orange-300">
+          {project.escalation_reason}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2 flex flex-col gap-6">
           {project.status === "AWAITING_SCRIPT_APPROVAL" && (
             <ScriptReviewPanel project={project} onChanged={refresh} />
           )}
+
+          {project.status === "FAILED" && <RescuePanel project={project} onChanged={refresh} />}
 
           <section className="rounded-lg border border-border bg-panel p-4">
             <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Timeline</h2>
@@ -288,13 +296,17 @@ export default function ProjectDetail() {
               </div>
               {project.publish_package.thumbnail_candidates?.length > 0 && (
                 <div className="flex gap-3">
-                  {project.publish_package.thumbnail_candidates.map((path, i) => (
-                    <img
-                      key={i}
-                      src={taskFileUrl(project.task_id, path)}
-                      className="h-40 rounded border border-border object-cover"
-                    />
-                  ))}
+                  {project.publish_package.thumbnail_candidates.map((path, i) => {
+                    const url = taskFileUrl(project.task_id, path);
+                    return (
+                      <div key={i} className="flex flex-col items-center gap-1">
+                        <img src={url} className="h-40 w-40 rounded border border-border object-cover" />
+                        <a href={url} download={`thumbnail-${i + 1}.jpg`} className="text-xs text-accent hover:underline">
+                          Download JPG
+                        </a>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               {project.published_posts && (

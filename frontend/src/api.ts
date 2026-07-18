@@ -57,14 +57,39 @@ export interface CreativeBrief {
   metadata_draft: { working_title: string; hook_variants: string[] };
 }
 
+export interface Finding {
+  category: string; // technical | visual | quote_attribution | fact_check | content_policy | script_repetition
+  fingerprint: string;
+  severity: string; // critical | major | minor
+  message: string;
+  justification: string;
+  revision_target: string | null; // creative_director | producer | researcher
+  overridable: boolean;
+}
+
 export interface QAReport {
-  overall: string;
-  technical_checks: { name: string; passed: boolean; detail: string }[];
-  frame_findings: { frame_index: number; matches_script: boolean; issues: string[]; notes: string }[];
+  overall: string; // pass | pass_with_warnings | revise | fail
+  technical_checks: { name: string; passed: boolean; detail: string; severity: string }[];
+  frame_findings: {
+    frame_index: number;
+    matches_script: boolean;
+    issues: string[];
+    notes: string;
+    severity: string;
+    justification: string;
+  }[];
   content_policy_flags: string[];
   revision_target: string | null;
   revision_notes: string | null;
   fact_check_flags: { sentence: string; supported: boolean; note: string }[];
+  script_repetition_flag: string | null;
+  findings: Finding[];
+}
+
+export interface OverriddenFindingsEntry {
+  at: string;
+  fingerprints: string[];
+  findings: Finding[];
 }
 
 export interface PublishPackage {
@@ -76,6 +101,29 @@ export interface PublishPackage {
   suggested_posting_time: string;
   content_policy_flags: string[];
   thumbnail_candidates: string[];
+}
+
+export interface RescueCandidate {
+  id: string;
+  label: string;
+  recorded_at: string | null;
+}
+
+export interface RescueEligibility {
+  project_id: number;
+  eligible: boolean;
+  reason: string;
+  candidates: RescueCandidate[];
+}
+
+export interface RescueHistoryEntry {
+  at: string;
+  from_status: string;
+  to_status: string;
+  failure_reason: string | null;
+  video_path: string;
+  video_label: string;
+  script_edit_warning: boolean;
 }
 
 export interface Project {
@@ -91,6 +139,12 @@ export interface Project {
   published_posts: Record<string, unknown>[] | null;
   task_id: string | null;
   video_path: string | null;
+  // Server-resolved, ready-to-use stream URL for video_path - always use
+  // this instead of building a /tasks/{task_id}/... URL by hand. video_path
+  // usually lives under the task scratch dir, but a rescued project (see
+  // RescuePanel) can point it at a render inside the project's own storage
+  // folder instead, which needs a different route entirely.
+  video_url: string | null;
   cost_usd: number;
   revision_count: number;
   failure_reason: string | null;
@@ -100,6 +154,14 @@ export interface Project {
   episode_number: number | null;
   approval_mode: string | null;
   script_revision_count: number;
+  escalation_reason: string | null;
+  overridden_findings: OverriddenFindingsEntry[] | null;
+  script_verification_warning: string | null;
+  rescue_eligible: boolean | null;
+  rescue_checked_at: string | null;
+  rescue_ineligible_reason: string | null;
+  rescue_candidate_label: string | null;
+  rescue_history: RescueHistoryEntry[] | null;
   created_at: string;
   updated_at: string;
   events?: AgentEventT[];
@@ -132,6 +194,7 @@ export interface ContentTypeTemplate {
   freshness_window_hours: number | null;
   series_capable: boolean;
   default_quality_preset: QualityPreset;
+  enabled: boolean;
 }
 
 export interface SeriesEpisode {
@@ -264,8 +327,35 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ revision_notes: revisionNotes }),
     }),
+  approveDespiteFindings: (id: number, overriddenFingerprints: string[], confirmPolicyRisk = false) =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/needs-review/approve`, {
+      method: "POST",
+      body: JSON.stringify({
+        overridden_fingerprints: overriddenFingerprints,
+        confirm_policy_risk: confirmPolicyRisk,
+      }),
+    }),
+  requestChangesFromReview: (id: number, notes: string) =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/needs-review/request-changes`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    }),
+  rejectFromReview: (id: number, notes = "") =>
+    apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/needs-review/reject`, {
+      method: "POST",
+      body: JSON.stringify({ notes }),
+    }),
   retryProject: (id: number) =>
     apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/retry`, { method: "POST" }),
+  getRescueEligibility: (id: number) =>
+    apiFetch<RescueEligibility>(`/api/v1/projects/${id}/rescue-eligibility`),
+  rescueProject: (id: number, candidateId?: string) =>
+    apiFetch<{ project_id: number; status: string; video_path: string }>(`/api/v1/projects/${id}/rescue`, {
+      method: "POST",
+      body: JSON.stringify({ candidate_id: candidateId }),
+    }),
+  runRescueScan: () =>
+    apiFetch<{ scanned: number; eligible: number }>("/api/v1/maintenance/rescue-scan", { method: "POST" }),
   markPublished: (id: number, platformUrls: { platform: string; url?: string }[]) =>
     apiFetch<{ project_id: number }>(`/api/v1/projects/${id}/mark-published`, {
       method: "POST",
@@ -326,8 +416,10 @@ export const api = {
   updateSettings: (partial: Partial<Settings>) =>
     apiFetch<Settings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(partial) }),
   getAnalytics: () => apiFetch<Analytics>("/api/v1/analytics"),
-  listContentTypes: () =>
-    apiFetch<{ content_types: ContentTypeTemplate[] }>("/api/v1/content-types").then((r) => r.content_types),
+  listContentTypes: (opts?: { enabledOnly?: boolean }) =>
+    apiFetch<{ content_types: ContentTypeTemplate[] }>(
+      opts?.enabledOnly ? "/api/v1/content-types?enabled_only=true" : "/api/v1/content-types"
+    ).then((r) => r.content_types),
   updateContentType: (id: string, partial: Partial<ContentTypeTemplate>) =>
     apiFetch<ContentTypeTemplate>(`/api/v1/content-types/${id}`, { method: "PUT", body: JSON.stringify(partial) }),
   listSeries: () => apiFetch<{ series: SeriesT[] }>("/api/v1/series").then((r) => r.series),

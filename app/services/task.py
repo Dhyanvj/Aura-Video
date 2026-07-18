@@ -255,6 +255,22 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
 
 
 def get_video_materials(task_id, params, video_terms, audio_duration):
+    """
+    Returns (downloaded_video_paths, clip_metadata). clip_metadata is the
+    per-clip dict list (search_term/provider/url/local_path) the storyboard
+    clip-index bridge (docs/DECISIONS_V3.md §4) needs - kept as its own
+    return value rather than stuffed into task state under the "materials"
+    key, which already means "the plain list of downloaded video file paths"
+    everywhere else this task-state dict is read (see the final kwargs in
+    start() below). Reusing that key for the dict-shaped metadata was the
+    root cause of a real incident: MemoryState.update_task() replaces the
+    whole stored dict rather than merging (see the comment at
+    generate_audio's call site above), so the dict-shaped metadata was
+    silently clobbered back to plain path strings by the time Producer read
+    final_state - and storyboard.record_clips() crashed on
+    'str' object has no attribute 'get' trying to treat a path string as a
+    clip-metadata dict.
+    """
     if params.video_source == "local":
         logger.info("\n\n## preprocess local materials")
         materials = video.preprocess_video(
@@ -265,17 +281,14 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             logger.error(
                 "no valid materials found, please check the materials and try again."
             )
-            return None
+            return None, []
         # Clip-index bridge (docs/DECISIONS_V3.md §4): local materials have no
         # search term, but are still addressable clips for Producer to record.
-        sm.state.update_task(
-            task_id,
-            materials=[
-                {"search_term": "", "provider": "local", "url": m.url, "local_path": m.url}
-                for m in materials
-            ],
-        )
-        return [material_info.url for material_info in materials]
+        clip_metadata = [
+            {"search_term": "", "provider": "local", "url": m.url, "local_path": m.url}
+            for m in materials
+        ]
+        return [material_info.url for material_info in materials], clip_metadata
     else:
         logger.info(f"\n\n## downloading videos from {params.video_source}")
         # 顺序匹配模式只在用户显式开启时生效。这里强制素材下载按关键词顺序
@@ -302,12 +315,8 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             logger.error(
                 "failed to download videos, maybe the network is not available. if you are in China, please use a VPN."
             )
-            return None
-        # Clip-index bridge (docs/DECISIONS_V3.md §4): surfaced via task state
-        # (the same loosely-typed dict "videos"/"subtitle_path" already use)
-        # so Producer can read it from final_state without any new plumbing.
-        sm.state.update_task(task_id, materials=clip_metadata)
-        return downloaded_videos
+            return None, []
+        return downloaded_videos, clip_metadata
 
 
 def generate_final_videos(
@@ -444,7 +453,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
 
     # 5. Get video materials
-    downloaded_videos = get_video_materials(
+    downloaded_videos, clip_metadata = get_video_materials(
         task_id, params, video_terms, audio_duration
     )
     if not downloaded_videos:
@@ -491,6 +500,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
         "audio_duration": audio_duration,
         "subtitle_path": subtitle_path,
         "materials": downloaded_videos,
+        "clip_metadata": clip_metadata,
     }
     sm.state.update_task(
         task_id, state=const.TASK_STATE_COMPLETE, progress=100, **kwargs

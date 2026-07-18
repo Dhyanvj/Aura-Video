@@ -26,9 +26,19 @@ _VIDEOPROJECT_NEW_COLUMNS = {
     "cancel_requested": "BOOLEAN NOT NULL DEFAULT 0",
     "approval_mode": "TEXT",
     "script_revision_count": "INTEGER NOT NULL DEFAULT 0",
+    "escalation_reason": "TEXT",
+    "overridden_findings": "JSON",
+    "script_verification_warning": "TEXT",
+    "rescue_eligible": "BOOLEAN",
+    "rescue_checked_at": "TIMESTAMP",
+    "rescue_ineligible_reason": "TEXT",
+    "rescue_candidate_path": "TEXT",
+    "rescue_candidate_label": "TEXT",
+    "rescue_history": "JSON",
 }
 _CONTENTTYPETEMPLATE_NEW_COLUMNS = {
     "description": "TEXT NOT NULL DEFAULT ''",
+    "enabled": "BOOLEAN NOT NULL DEFAULT 1",
 }
 
 

@@ -71,9 +71,12 @@ export default function Dashboard() {
   const videosThisMonth = projects.filter((p) => isThisMonth(p.created_at)).length;
   const failedThisMonth = projects.filter((p) => isThisMonth(p.created_at) && p.status === "FAILED").length;
   const failureRate = videosThisMonth > 0 ? Math.round((failedThisMonth / videosThisMonth) * 100) : 0;
-  const awaitingApproval = projects.filter((p) => p.status === "AWAITING_HUMAN_APPROVAL");
+  const awaitingApproval = projects.filter(
+    (p) => p.status === "AWAITING_HUMAN_APPROVAL" || p.status === "NEEDS_HUMAN_REVIEW",
+  );
   const awaitingScriptApproval = projects.filter((p) => p.status === "AWAITING_SCRIPT_APPROVAL");
   const readyToPublish = projects.filter((p) => p.status === "APPROVED");
+  const rescuableFailed = projects.filter((p) => p.status === "FAILED" && p.rescue_eligible);
   const recent = [...projects]
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     .slice(0, 6);
@@ -104,6 +107,16 @@ export default function Dashboard() {
         </p>
       </div>
 
+      {rescuableFailed.length > 0 && (
+        <div className="rounded-lg border border-emerald-700/50 bg-emerald-950/20 p-3 text-sm text-emerald-300">
+          {rescuableFailed.length} failed project{rescuableFailed.length === 1 ? "" : "s"} {rescuableFailed.length === 1 ? "has" : "have"}{" "}
+          usable renders —{" "}
+          <Link to="/pipeline" className="underline hover:text-emerald-200">
+            review them?
+          </Link>
+        </div>
+      )}
+
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label="Videos this month" value={String(videosThisMonth)} />
         <StatCard
@@ -126,7 +139,7 @@ export default function Dashboard() {
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {recent.map((p) => (
-              <ProjectCard key={p.id} project={p} onDeleted={refresh} />
+              <ProjectCard key={p.id} project={p} onDeleted={refresh} onChanged={refresh} />
             ))}
             {recent.length === 0 && <p className="text-sm text-slate-500 dark:text-slate-400">No projects yet.</p>}
           </div>

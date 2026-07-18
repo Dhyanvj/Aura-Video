@@ -41,7 +41,14 @@ function ContentTypeRow({
         onClick={() => setOpen((v) => !v)}
         className="flex w-full items-center justify-between text-left text-sm text-slate-800 dark:text-slate-200"
       >
-        <span className="font-medium">{template.label}</span>
+        <span className="font-medium">
+          {template.label}
+          {!template.enabled && (
+            <span className="ml-2 inline-block rounded bg-slate-200 dark:bg-slate-800 px-1.5 py-0.5 text-[10px] font-normal text-slate-500 dark:text-slate-400">
+              inactive
+            </span>
+          )}
+        </span>
         <span className="text-xs text-slate-500 dark:text-slate-500">
           {template.id} &middot; ~{template.default_duration_s}s &middot; {template.default_quality_preset}
         </span>
@@ -114,6 +121,14 @@ function ContentTypeRow({
           </div>
 
           <div className="flex flex-wrap gap-4 text-sm text-slate-800 dark:text-slate-200">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={template.enabled}
+                onChange={(e) => save({ enabled: e.target.checked })}
+              />
+              Enabled (shown in New Video)
+            </label>
             <label className="flex items-center gap-2">
               <input
                 type="checkbox"
@@ -261,6 +276,18 @@ export default function Settings() {
   const [playbooks, setPlaybooks] = useState<PlaybookT[]>([]);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanResult, setScanResult] = useState<{ scanned: number; eligible: number } | null>(null);
+
+  const runRescueScan = async () => {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      setScanResult(await api.runRescueScan());
+    } finally {
+      setScanning(false);
+    }
+  };
 
   useEffect(() => {
     api.getSettings().then(setSettings);
@@ -416,12 +443,37 @@ export default function Settings() {
       </section>
 
       <section className="mb-6 rounded-lg border border-border bg-panel p-4">
+        <h2 className="mb-3 text-sm font-semibold text-slate-800 dark:text-slate-200">Maintenance</h2>
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Scans every Failed project for a usable rendered video and marks which ones can be rescued into the
+          normal review flow instead of re-rendered from scratch. Surfacing only - nothing is ever rescued
+          automatically; you still click "Override failure" on each one from the Pipeline board or the project
+          page.
+        </p>
+        <button
+          onClick={runRescueScan}
+          disabled={scanning}
+          className="rounded bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+        >
+          {scanning ? "Scanning..." : "Scan Failed projects for rescuable renders"}
+        </button>
+        {scanResult && (
+          <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+            Checked {scanResult.scanned} Failed project{scanResult.scanned === 1 ? "" : "s"} - {scanResult.eligible}{" "}
+            {scanResult.eligible === 1 ? "is" : "are"} rescuable.
+          </p>
+        )}
+      </section>
+
+      <section className="mb-6 rounded-lg border border-border bg-panel p-4">
         <h2 className="mb-1 text-sm font-semibold text-slate-800 dark:text-slate-200">Content types</h2>
         <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-          The New Video presets shown as cards. Built-in defaults, editable here without a code change.
+          The New Video presets shown as cards. Built-in defaults, editable here without a code change. Disabled
+          types are hidden from New Video, Trend Scout, and the scheduler, but existing projects of that type stay
+          viewable - re-enable one below any time.
         </p>
         <div className="flex flex-col gap-2">
-          {contentTypes.map((t) => (
+          {contentTypes.filter((t) => t.enabled).map((t) => (
             <ContentTypeRow
               key={t.id}
               template={t}
@@ -430,6 +482,23 @@ export default function Settings() {
           ))}
           {contentTypes.length === 0 && <p className="text-xs text-slate-500 dark:text-slate-500">Loading...</p>}
         </div>
+
+        {contentTypes.some((t) => !t.enabled) && (
+          <>
+            <h3 className="mb-1 mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-500">
+              Inactive
+            </h3>
+            <div className="flex flex-col gap-2">
+              {contentTypes.filter((t) => !t.enabled).map((t) => (
+                <ContentTypeRow
+                  key={t.id}
+                  template={t}
+                  onSaved={(updated) => setContentTypes((prev) => prev.map((c) => (c.id === updated.id ? updated : c)))}
+                />
+              ))}
+            </div>
+          </>
+        )}
       </section>
 
       <section className="mb-6 rounded-lg border border-border bg-panel p-4">

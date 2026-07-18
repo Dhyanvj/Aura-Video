@@ -61,6 +61,32 @@ class TestStoryboardDbBacked(unittest.TestCase):
         self.assertEqual(len(clips), 1)
         self.assertEqual(clips[0].search_term, "z")
 
+    def test_record_clips_skips_malformed_string_entries_without_raising(self):
+        # Regression: a real incident had task.py's final task-state kwargs
+        # clobber the dict-shaped clip metadata with a plain list of
+        # downloaded file-path strings under the same "materials" key (see
+        # app/services/task.py's get_video_materials docstring) - record_clips
+        # then crashed with 'str' object has no attribute 'get'. Malformed
+        # entries must be skipped (not silently accepted, not fatal), and
+        # valid entries alongside them must still be recorded in order.
+        project_id = self._create_project(topic="t")
+        storyboard.record_clips(
+            project_id,
+            [
+                {"search_term": "a", "provider": "pexels", "url": "u1", "local_path": "/tmp/a.mp4"},
+                "/tmp/plain-path-string.mp4",
+                {"search_term": "b", "provider": "pexels", "url": "u2", "local_path": "/tmp/b.mp4"},
+            ],
+        )
+        clips = storyboard.list_clips(project_id)
+        self.assertEqual([c.search_term for c in clips], ["a", "b"])
+        self.assertEqual([c.index for c in clips], [0, 1])
+
+    def test_record_clips_all_malformed_entries_leaves_an_empty_index_without_raising(self):
+        project_id = self._create_project(topic="t")
+        storyboard.record_clips(project_id, ["/tmp/a.mp4", "/tmp/b.mp4"])
+        self.assertEqual(storyboard.list_clips(project_id), [])
+
     def test_record_clips_scoped_per_project(self):
         project_a = self._create_project(topic="a")
         project_b = self._create_project(topic="b")

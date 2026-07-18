@@ -38,6 +38,25 @@ class KeyFact(BaseModel):
     confidence: str = "single-source"  # verified | single-source | disputed | myth
 
 
+class VerifiedQuote(BaseModel):
+    """
+    The Researcher's own verification of ONE specific quote/lesson centerpiece
+    (motivational-type content), populated BEFORE the script approval gate -
+    verification belongs pre-production, where re-checking costs nothing, not
+    as a post-render QA re-litigation. Post-render QA (and the script-approval
+    gate) trust this rather than independently re-deriving an opinion from
+    scratch - see app/services/qa.py's verify_quote_against_dossier.
+    """
+
+    text: str  # exact wording the Researcher confirmed (or attempted to confirm)
+    attribution: Optional[str] = None
+    # verified = wording+attribution corroborated by >=2 independent sources;
+    # unverified = could not confirm (recommend a life lesson instead);
+    # disputed = sources actively conflict or debunk this attribution.
+    verification_status: str = "unverified"  # verified | unverified | disputed
+    sources: List[SourceCitation] = Field(default_factory=list)
+
+
 class ResearchDossier(BaseModel):
     topic: str
     why_now: str = ""  # one line: why this topic, for a human skimming Project Detail
@@ -51,6 +70,12 @@ class ResearchDossier(BaseModel):
     # treat this as an automatic QA fail rather than trusting an unverified
     # script.
     reduced_verification: bool = False
+    # Motivational/Quotes only: the Researcher's verification of the ONE
+    # quote/lesson centerpiece it recommends, if the type calls for a real
+    # attributed quote at all. None when the type has no quote/lesson
+    # centerpiece, or the Researcher recommended an (unattributed) life
+    # lesson instead of a real quote.
+    verified_quote: Optional[VerifiedQuote] = None
 
 
 class QuoteOrLesson(BaseModel):
@@ -88,6 +113,9 @@ class TechnicalCheck(BaseModel):
     name: str
     passed: bool
     detail: str
+    # Mapped in code from app.services.qa.severity_for_check, never model-
+    # assigned - deterministic checks have a fixed, known severity.
+    severity: str = "major"  # critical | major | minor
 
 
 class FrameFinding(BaseModel):
@@ -95,6 +123,12 @@ class FrameFinding(BaseModel):
     matches_script: bool
     issues: List[str] = Field(default_factory=list)
     notes: str
+    # Model-assigned per fix 1's calibrated tiers (see quality_reviewer's
+    # system prompt): critical = frame unusable/corrupted/watermarked, major =
+    # a real mismatch/readability problem, minor = a polish preference that
+    # must never block or trigger a revision on its own.
+    severity: str = "minor"  # critical | major | minor
+    justification: str = ""
 
 
 class VisionReview(BaseModel):
@@ -103,11 +137,6 @@ class VisionReview(BaseModel):
     content_policy_flags: List[str] = Field(default_factory=list)
     revision_target: Optional[str] = None  # creative_director | producer
     revision_notes: Optional[str] = None
-    # Only set when a quote was supplied for the reviewer to check, from the
-    # model's own training knowledge. This is independent of (and runs even
-    # without) a Researcher dossier - it's a defense-in-depth check, not a
-    # substitute for the dossier-based fact_check_flags below.
-    quote_attribution_check: Optional[str] = None  # correct | incorrect | uncertain
 
 
 class FactCheckFlag(BaseModel):
@@ -120,18 +149,51 @@ class FactCheckResult(BaseModel):
     flags: List[FactCheckFlag] = Field(default_factory=list)
 
 
+class Finding(BaseModel):
+    """
+    One severity-tagged QA finding, deterministic or LLM-sourced, unified so
+    the orchestrator's escalation logic and the Final Review UI can reason
+    about "how bad" and "who can fix it" without re-deriving either from
+    free-text revision_notes. See docs incident fix §1/§4.
+    """
+
+    category: str  # technical | visual | quote_attribution | fact_check | content_policy | script_repetition
+    # Stable id for repeated-issue detection across QA rounds of the same
+    # project (e.g. "technical:audio_present", "quote_attribution:marcus-aurelius").
+    # Two findings with the same fingerprint across consecutive QA reports
+    # mean a revision could not resolve it - see qa.py/orchestrator's
+    # repeated-fingerprint short-circuit.
+    fingerprint: str
+    severity: str  # critical | major | minor
+    message: str
+    justification: str = ""
+    # Who can actually fix this - creative_director (rewrite), producer
+    # (re-render/different materials), researcher (needs more evidence, not a
+    # rewrite), or None for a pure-informational minor finding.
+    revision_target: Optional[str] = None
+    # False only for "hard technical criticals" (missing/corrupt audio,
+    # corrupted file) - these genuinely need a re-render and can never be
+    # approved past at NEEDS_HUMAN_REVIEW, unlike every other finding type.
+    overridable: bool = True
+
+
 class QAReport(BaseModel):
-    overall: str  # pass | revise | fail
+    overall: str  # pass | pass_with_warnings | revise | fail
     technical_checks: List[TechnicalCheck]
     frame_findings: List[FrameFinding]
     content_policy_flags: List[str] = Field(default_factory=list)
-    revision_target: Optional[str] = None
+    revision_target: Optional[str] = None  # creative_director | producer | researcher
     revision_notes: Optional[str] = None
     fact_check_flags: List[FactCheckFlag] = Field(default_factory=list)
     # docs/DECISIONS_V3.md §2 script-repetition check: deterministic n-gram
     # overlap against the last 5 scripts of this content type - set only when
     # the overlap crossed the threshold, so it's None on every normal report.
     script_repetition_flag: Optional[str] = None
+    # Unified severity-tagged findings (see Finding) - the source of truth
+    # `overall`/`revision_target` are computed from via
+    # app.services.qa.aggregate_verdict/pick_revision_target. Empty on a
+    # clean pass.
+    findings: List[Finding] = Field(default_factory=list)
 
 
 class OriginalityJudgment(BaseModel):

@@ -13,7 +13,9 @@ _CANDIDATE_TIMESTAMP_FRACTIONS = (0.1, 0.5, 0.85)
 def generate_thumbnail_candidates(video_path: str, video_duration: float, hook_text: str, out_dir: str) -> List[str]:
     """
     Extracts 3 candidate frames (hook/mid/climax timestamps) via ffmpeg and
-    overlays the hook text on each with Pillow. Returns the PNG file paths.
+    overlays the hook text on each with Pillow. Returns the JPG file paths -
+    JPEG rather than PNG so every candidate is directly downloadable/usable
+    as a platform-ready thumbnail without a separate export step.
     """
     if video_duration <= 0:
         return []
@@ -31,7 +33,7 @@ def generate_thumbnail_candidates(video_path: str, video_duration: float, hook_t
         )
         if not os.path.isfile(raw_path):
             continue
-        final_path = os.path.join(out_dir, f"thumbnail-{index + 1}.png")
+        final_path = os.path.join(out_dir, f"thumbnail-{index + 1}.jpg")
         _overlay_hook_text(raw_path, hook_text, final_path)
         os.remove(raw_path)
         candidates.append(final_path)
@@ -63,7 +65,7 @@ def _overlay_hook_text(image_path: str, text: str, out_path: str) -> None:
         )
         y += line_height
 
-    image.save(out_path, "PNG")
+    image.save(out_path, "JPEG", quality=92)
 
 
 def _wrap_text(text: str, draw: ImageDraw.ImageDraw, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:

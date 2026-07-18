@@ -1,4 +1,3 @@
-import os
 from typing import List, Optional
 
 from loguru import logger
@@ -30,7 +29,7 @@ copyrighted-music reference, or content that could trip platform guidelines."""
 class Publisher(BaseAgent):
     agent_name = "publisher"
 
-    def prepare(self, script: str, niche: str, hook_text: str, video_path: str) -> dict:
+    def prepare(self, script: str, niche: str, hook_text: str, video_path: str, task_id: str) -> dict:
         """
         Builds the publish package (metadata + thumbnail candidates). Never
         publishes anything - that only happens via publish() after a human
@@ -40,7 +39,7 @@ class Publisher(BaseAgent):
         package = self.call_json(system=_SYSTEM_PROMPT, user=utils.to_json(payload), response_model=PublishPackage)
 
         _, duration = qa_service.run_technical_checks(video_path)
-        out_dir = utils.task_dir(_task_dir_name(video_path))
+        out_dir = utils.task_dir(task_id)
         thumbnails = thumbnails_service.generate_thumbnail_candidates(
             video_path=video_path, video_duration=duration, hook_text=hook_text, out_dir=out_dir
         )
@@ -90,9 +89,3 @@ class Publisher(BaseAgent):
         if not result.get("success"):
             logger.warning(f"publish failed for {video_path}: {result}")
         return [result]
-
-
-def _task_dir_name(video_path: str) -> str:
-    # video_path is an absolute path like storage/tasks/<task_id>/final-1.mp4;
-    # thumbnails are written alongside it in the same task directory.
-    return os.path.basename(os.path.dirname(video_path))

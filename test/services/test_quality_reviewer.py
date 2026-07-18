@@ -6,7 +6,15 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from app.agents.quality_reviewer import QualityReviewer
-from app.agents.schemas import FactCheckFlag, FactCheckResult, FrameFinding, QuoteOrLesson, ResearchDossier, VisionReview
+from app.agents.schemas import (
+    FactCheckFlag,
+    FactCheckResult,
+    FrameFinding,
+    QuoteOrLesson,
+    ResearchDossier,
+    VerifiedQuote,
+    VisionReview,
+)
 from app.services.qa import TechnicalCheckResult
 
 
@@ -61,12 +69,16 @@ class TestQualityReviewerRevisionRouting(unittest.TestCase):
         self.assertEqual(report.revision_target, "creative_director")
 
     def test_non_duration_technical_failure_still_routes_to_producer(self):
+        # Wrong resolution is severity="critical" (qa.CHECK_SEVERITY) per the
+        # incident fix's severity tiers, so the verdict is "fail" now, not
+        # "revise" - but it's still overridable (not a hard technical
+        # critical) and still routes to producer, same as before.
         report = self._review_with(
             technical_checks=[TechnicalCheckResult("resolution_1080x1920", False, "640x480")],
             vision_overall="pass",
             vision_revision_target=None,
         )
-        self.assertEqual(report.overall, "revise")
+        self.assertEqual(report.overall, "fail")
         self.assertEqual(report.revision_target, "producer")
 
     def test_vision_content_mismatch_with_passing_technical_checks_keeps_producer_target(self):
@@ -110,17 +122,20 @@ class TestQualityReviewerRevisionRouting(unittest.TestCase):
         mock_checks.assert_called_once_with("/tmp/whatever.mp4", "/tmp/sub.srt", 45.2)
 
 
-class TestQualityReviewerAttributionCheck(unittest.TestCase):
+class TestQualityReviewerQuoteVerification(unittest.TestCase):
     """
-    Part 2 (Motivational Quotes & Life Lessons): "misattributed quotes are a
-    QA fail" - there's no independent source lookup yet (that's the
-    Researcher agent), so this checks the vision model's own knowledge-based
-    assessment and treats anything short of "correct" as unsafe to publish.
+    Incident fix §3: attribution verification happens pre-production (the
+    Researcher verifies a quote from >=2 sources before the script gate) and
+    QA validates the script against that dossier rather than re-deriving its
+    own opinion from an LLM's training knowledge - that re-litigation is
+    exactly what let a correctly-attributed, already-verified quote (the
+    "Earth is the cradle of humanity" / Tsiolkovsky incident) get flagged
+    "uncertain" post-render.
     """
 
-    def _review_with_quote(self, quote_attribution_check, is_quote=True):
+    def _review_with_quote(self, quote_text, attribution, dossier, is_quote=True):
         reviewer = QualityReviewer(project_id=None)
-        quote = QuoteOrLesson(is_quote=is_quote, text="The obstacle is the way.", attribution="Ryan Holiday")
+        quote = QuoteOrLesson(is_quote=is_quote, text=quote_text, attribution=attribution)
         with patch(
             "app.agents.quality_reviewer.qa_service.run_technical_checks",
             return_value=([TechnicalCheckResult("duration_15_to_60s", True, "45.0s")], 45.0),
@@ -130,31 +145,71 @@ class TestQualityReviewerAttributionCheck(unittest.TestCase):
             reviewer,
             "call_json_with_content",
             return_value=VisionReview(
-                overall="pass",
-                frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")],
-                quote_attribution_check=quote_attribution_check,
+                overall="pass", frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")]
             ),
-        ):
-            return reviewer.review(video_path="/tmp/whatever.mp4", script="script", quote_or_lesson=quote)
+        ), patch.object(reviewer, "call_json", return_value=FactCheckResult(flags=[])):
+            return reviewer.review(
+                video_path="/tmp/whatever.mp4", script="script", quote_or_lesson=quote, research_dossier=dossier
+            )
 
-    def test_incorrect_attribution_is_a_hard_fail(self):
-        report = self._review_with_quote("incorrect")
-        self.assertEqual(report.overall, "fail")
-        self.assertEqual(report.revision_target, "creative_director")
-        self.assertIn("could not be confirmed", report.revision_notes)
-
-    def test_uncertain_attribution_is_a_revision_not_an_outright_fail(self):
-        report = self._review_with_quote("uncertain")
-        self.assertEqual(report.overall, "revise")
-        self.assertEqual(report.revision_target, "creative_director")
-
-    def test_correct_attribution_does_not_affect_a_clean_pass(self):
-        report = self._review_with_quote("correct")
+    def test_dossier_verified_matching_quote_is_a_clean_pass(self):
+        # QA must accept a dossier-verified quote outright, not re-derive its
+        # own opinion - this is the exact incident regression.
+        dossier = ResearchDossier(
+            topic="t",
+            verified_quote=VerifiedQuote(
+                text="The obstacle is the way.", attribution="Ryan Holiday", verification_status="verified"
+            ),
+        )
+        report = self._review_with_quote("The obstacle is the way.", "Ryan Holiday", dossier)
         self.assertEqual(report.overall, "pass")
+        self.assertEqual(report.findings, [])
+
+    def test_dossier_verified_quote_tolerates_punctuation_differences(self):
+        dossier = ResearchDossier(
+            topic="t",
+            verified_quote=VerifiedQuote(
+                text="The obstacle is the way!", attribution="Ryan Holiday", verification_status="verified"
+            ),
+        )
+        report = self._review_with_quote("The obstacle is the way.", "Ryan Holiday", dossier)
+        self.assertEqual(report.overall, "pass")
+
+    def test_no_verified_quote_in_dossier_is_major_not_critical(self):
+        dossier = ResearchDossier(topic="t")  # verified_quote left unset
+        report = self._review_with_quote("The obstacle is the way.", "Ryan Holiday", dossier)
+        self.assertEqual(report.overall, "revise")
+        self.assertEqual(report.revision_target, "researcher")
+        finding = next(f for f in report.findings if f.category == "quote_attribution")
+        self.assertEqual(finding.severity, "major")
+
+    def test_disputed_verified_quote_is_critical(self):
+        dossier = ResearchDossier(
+            topic="t",
+            verified_quote=VerifiedQuote(
+                text="The obstacle is the way.", attribution="Ryan Holiday", verification_status="disputed"
+            ),
+        )
+        report = self._review_with_quote("The obstacle is the way.", "Ryan Holiday", dossier)
+        self.assertEqual(report.overall, "fail")
+        self.assertEqual(report.revision_target, "researcher")
+        finding = next(f for f in report.findings if f.category == "quote_attribution")
+        self.assertEqual(finding.severity, "critical")
+
+    def test_mismatched_attribution_against_verified_quote_is_major(self):
+        dossier = ResearchDossier(
+            topic="t",
+            verified_quote=VerifiedQuote(
+                text="The obstacle is the way.", attribution="Ryan Holiday", verification_status="verified"
+            ),
+        )
+        report = self._review_with_quote("The obstacle is the way.", "Marcus Aurelius", dossier)
+        self.assertEqual(report.overall, "revise")
+        self.assertEqual(report.revision_target, "researcher")
 
     def test_attribution_check_ignored_for_a_life_lesson(self):
         # is_quote=False means there's no attribution to verify at all.
-        report = self._review_with_quote("incorrect", is_quote=False)
+        report = self._review_with_quote("Some lesson.", None, ResearchDossier(topic="t"), is_quote=False)
         self.assertEqual(report.overall, "pass")
 
     def test_no_quote_supplied_is_unaffected(self):
@@ -200,13 +255,17 @@ class TestQualityReviewerFactCheck(unittest.TestCase):
         ), patch.object(reviewer, "call_json", return_value=FactCheckResult(flags=flags)):
             return reviewer.review(video_path="/tmp/whatever.mp4", script="script", research_dossier=dossier)
 
-    def test_unsupported_claim_routes_to_creative_director(self):
+    def test_unsupported_claim_routes_to_researcher(self):
+        # Incident fix §4: an unsupported factual claim needs evidence, not a
+        # rewrite - it must route to the Researcher for supplementary
+        # verification, never straight to the Creative Director (who can
+        # only reword, not confirm a fact).
         report = self._review_with_fact_check(
             [FactCheckFlag(sentence="Octopuses have nine hearts.", supported=False, note="dossier says three")]
         )
         self.assertEqual(report.overall, "revise")
-        self.assertEqual(report.revision_target, "creative_director")
-        self.assertIn("unsupported", report.revision_notes)
+        self.assertEqual(report.revision_target, "researcher")
+        self.assertIn("Octopuses have nine hearts", report.revision_notes)
         self.assertEqual(len(report.fact_check_flags), 1)
 
     def test_all_supported_claims_do_not_affect_a_clean_pass(self):
@@ -232,12 +291,19 @@ class TestQualityReviewerFactCheck(unittest.TestCase):
         mock_fact_check.assert_not_called()
         self.assertEqual(report.fact_check_flags, [])
 
-    def test_unsupported_claim_note_appended_without_overriding_an_existing_fail(self):
-        # A separate hard fail (e.g. misattributed quote) should still win as
-        # the overall verdict - the fact-check note is additive, not a demotion.
+    def test_unsupported_claim_note_appended_without_overriding_an_existing_critical(self):
+        # A separate critical finding (a disputed/debunked quote) must still
+        # win as the overall verdict - the fact-check note is additive
+        # (still present in findings/revision_notes), not a demotion of the
+        # critical severity down to major.
         reviewer = QualityReviewer(project_id=None)
         quote = QuoteOrLesson(is_quote=True, text="The obstacle is the way.", attribution="Ryan Holiday")
-        dossier = ResearchDossier(topic="t")
+        dossier = ResearchDossier(
+            topic="t",
+            verified_quote=VerifiedQuote(
+                text="The obstacle is the way.", attribution="Ryan Holiday", verification_status="disputed"
+            ),
+        )
         with patch(
             "app.agents.quality_reviewer.qa_service.run_technical_checks",
             return_value=([TechnicalCheckResult("duration_15_to_60s", True, "45.0s")], 45.0),
@@ -249,7 +315,6 @@ class TestQualityReviewerFactCheck(unittest.TestCase):
             return_value=VisionReview(
                 overall="pass",
                 frame_findings=[FrameFinding(frame_index=0, matches_script=True, notes="ok")],
-                quote_attribution_check="incorrect",
             ),
         ), patch.object(
             reviewer,
@@ -260,8 +325,10 @@ class TestQualityReviewerFactCheck(unittest.TestCase):
                 video_path="/tmp/whatever.mp4", script="script", quote_or_lesson=quote, research_dossier=dossier
             )
         self.assertEqual(report.overall, "fail")
-        self.assertEqual(report.revision_target, "creative_director")
-        self.assertIn("unsupported", report.revision_notes)
+        self.assertIn('"x"', report.revision_notes)
+        categories = {f.category for f in report.findings}
+        self.assertIn("quote_attribution", categories)
+        self.assertIn("fact_check", categories)
 
 
 class TestQualityReviewerScriptRepetition(unittest.TestCase):

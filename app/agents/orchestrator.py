@@ -5,7 +5,7 @@ from loguru import logger
 from sqlmodel import select
 
 from app.agents import base as agent_base
-from app.agents.creative_director import CreativeDirector
+from app.agents.creative_director import REQUIRES_QUOTE_OR_LESSON, CreativeDirector
 from app.agents.producer import Producer
 from app.agents.publisher import Publisher
 from app.agents.quality_reviewer import QualityReviewer
@@ -16,7 +16,8 @@ from app.config import config
 from app.db import session_scope
 from app.db.models import AgentEvent, ContentTypeTemplate, ProjectStatus, Series, VideoProject, utcnow
 from app.models.schema import VideoAspect, VideoConcatMode, VideoParams
-from app.services import cancellation, originality, playbook, project_storage, storyboard
+from app.services import cancellation, originality, playbook, project_storage, rescue, storyboard
+from app.services import qa as qa_service
 from app.services.cancellation import PipelineCancelled
 from app.services.ws_manager import broadcast_event, broadcast_status
 
@@ -26,7 +27,10 @@ from app.services.ws_manager import broadcast_event, broadcast_status
 # require research, but a thin research pass there should make the Creative
 # Director more conservative (it's already instructed to fall back to a life
 # lesson over a risky quote), not hard-fail the project outright.
-_NEWS_CONTENT_TYPES = {"ai_news", "world_news"}
+# Shared with app.services.qa (QA's fact-check severity uses the same set) so
+# the freshness/evidence gate and QA's "news is strict" standard never drift
+# apart.
+_NEWS_CONTENT_TYPES = qa_service.NEWS_CONTENT_TYPES
 
 # Statuses a project can be resumed from on startup after a crash. Any project
 # still in one of these (and with a topic already picked) when the process
@@ -208,6 +212,8 @@ def _get_content_type_info(content_type_id: Optional[str]) -> Optional[dict]:
             "research_required": template.research_required,
             "freshness_window_hours": template.freshness_window_hours,
             "ai_gen_allowed": bool((template.visual_strategy or {}).get("ai_gen_allowed")),
+            "voice_style": template.voice_style,
+            "music_palette": template.music_palette,
         }
 
 
@@ -512,11 +518,13 @@ def _write_brief(
     niche: str,
     revision_notes: Optional[str],
     dossier: Optional[ResearchDossier] = None,
+    record_series_summary: bool = True,
 ) -> CreativeBrief:
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         content_type_id = project.content_type_id if project else None
 
+    content_type_info = _get_content_type_info(content_type_id)
     director = CreativeDirector(project_id)
     brief = director.write(
         topic=topic,
@@ -526,6 +534,7 @@ def _write_brief(
         research_dossier=dossier,
         recent_hook_patterns=_recent_hook_patterns(content_type_id),
         playbook_bullets=playbook.get_active_bullets("creative_director", content_type_id),
+        voice_style=content_type_info.get("voice_style") if content_type_info else None,
     )
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
@@ -537,8 +546,76 @@ def _write_brief(
         series_id = project.series_id
         episode_number = project.episode_number
 
-    if series_id:
+    if series_id and record_series_summary:
         _append_series_summary(series_id, episode_number, topic)
+    return brief
+
+
+def _set_script_verification_warning(project_id: int, warning: Optional[str]) -> None:
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project.script_verification_warning != warning:
+            project.script_verification_warning = warning
+            session.add(project)
+            session.commit()
+
+
+def _verify_and_maybe_rewrite_quote(
+    project_id: int,
+    topic: str,
+    niche: str,
+    brief: CreativeBrief,
+    dossier: Optional[ResearchDossier],
+    content_type_id: Optional[str],
+) -> CreativeBrief:
+    """
+    Incident fix §3: attribution/fact verification belongs BEFORE production,
+    where fixing it costs nothing - not as a post-render QA re-litigation.
+    If the Creative Director's quote/lesson centerpiece doesn't match what
+    the Researcher actually verified, this gets one free rewrite attempt
+    (never touching the QA revision budget); if it's still unverifiable
+    afterward, the project still reaches the human at the script-approval
+    gate, now carrying an explicit warning instead of silently treating an
+    unconfirmed quote as fine.
+    """
+    if content_type_id not in REQUIRES_QUOTE_OR_LESSON or dossier is None:
+        return brief
+    quote = brief.quote_or_lesson
+    if quote is None or not quote.is_quote:
+        _set_script_verification_warning(project_id, None)
+        return brief
+
+    issue = qa_service.verify_quote_against_dossier(quote, dossier)
+    if issue is None:
+        _set_script_verification_warning(project_id, None)
+        return brief
+
+    reason, _severity = issue
+    _log_event(
+        project_id,
+        f"Quote verification failed at script stage, requesting one free rewrite: {reason}",
+        type_="error",
+    )
+    notes = (
+        f"Your quote/lesson could not be verified against the Researcher's dossier: {reason}. Use the "
+        "dossier's verified_quote exactly (wording and attribution) if using a quote, or set is_quote=false "
+        "and write an original life lesson instead - a wrong attribution is worse than no attribution."
+    )
+    brief = _write_brief(project_id, topic, niche, notes, dossier, record_series_summary=False)
+    _set_status(project_id, ProjectStatus.SCRIPT_READY)
+
+    quote = brief.quote_or_lesson
+    issue = qa_service.verify_quote_against_dossier(quote, dossier) if quote and quote.is_quote else None
+    if issue is None:
+        _set_script_verification_warning(project_id, None)
+    else:
+        reason, _severity = issue
+        _set_script_verification_warning(project_id, reason)
+        _log_event(
+            project_id,
+            f"Quote still unverified after rewrite; flagged for human review at script approval: {reason}",
+            type_="error",
+        )
     return brief
 
 
@@ -603,6 +680,7 @@ def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) 
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         content_type_id = project.content_type_id if project else None
+    content_type_info = _get_content_type_info(content_type_id)
     return VideoParams(
         video_subject=topic,
         video_script=brief.script,
@@ -613,6 +691,7 @@ def _video_params_from_brief(project_id: int, topic: str, brief: CreativeBrief) 
         voice_name=_resolve_voice_name(project_id, brief),
         bgm_type="random",
         bgm_file=brief.bgm_file or "",
+        bgm_palette=(content_type_info.get("music_palette") if content_type_info else "") or "",
         quote_text=quote.text if quote else None,
         quote_attribution=(quote.attribution if quote and quote.is_quote else None),
         ai_image_fallback_enabled=_ai_image_fallback_allowed(content_type_id),
@@ -630,9 +709,18 @@ def _append_qa_report(project_id: int, report: QAReport) -> None:
 
 
 def _prepare_publish_package(project_id: int, brief: CreativeBrief, video_path: str, niche: str) -> None:
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        task_id = project.task_id
+
     publisher = Publisher(project_id)
     hook_text = brief.metadata_draft.hook_variants[0] if brief.metadata_draft.hook_variants else brief.metadata_draft.working_title
-    package = publisher.prepare(script=brief.script, niche=niche, hook_text=hook_text, video_path=video_path)
+    # task_id (not video_path's parent directory) is always where thumbnails
+    # get written and served from - video_path itself can point outside the
+    # task scratch dir for a rescued project (orchestrator.rescue_failed_project
+    # can repoint it at a render inside the project's own storage folder),
+    # which broke thumbnail generation/serving for those projects.
+    package = publisher.prepare(script=brief.script, niche=niche, hook_text=hook_text, video_path=video_path, task_id=task_id)
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         project.publish_package = package
@@ -716,6 +804,7 @@ def _run_pipeline(
         brief = _write_brief(project_id, topic, niche, revision_notes, dossier)
         _set_status(project_id, ProjectStatus.SCRIPT_READY)
         _log_event(project_id, "Creative Director produced a script and brief")
+        brief = _verify_and_maybe_rewrite_quote(project_id, topic, niche, brief, dossier, content_type_id)
 
         # Script-approval gate: only on the first pass through SCRIPT_READY
         # for this project (revision_notes is None) - never on a QA-triggered
@@ -727,11 +816,26 @@ def _run_pipeline(
         # through _run_pipeline) so it isn't affected by this guard either.
         if revision_notes is None:
             cancellation.raise_if_cancelled(project_id)
-            if _project_approval_mode(project_id) == "automatic":
+            with session_scope() as session:
+                project = session.get(VideoProject, project_id)
+                needs_verification_review = bool(project.script_verification_warning)
+            # An unverifiable quote/lesson centerpiece forces a human
+            # checkpoint even under automatic approval mode (incident fix
+            # §3) - a quote a Researcher couldn't confirm is exactly the
+            # exceptional case automatic mode's normal skip-through must not
+            # silently wave through into a render.
+            if _project_approval_mode(project_id) == "automatic" and not needs_verification_review:
                 _log_event(project_id, "Script auto-approved by mode setting", type_="output")
             else:
                 _set_status(project_id, ProjectStatus.AWAITING_SCRIPT_APPROVAL)
-                _log_event(project_id, "Awaiting human script approval before production begins")
+                if needs_verification_review:
+                    _log_event(
+                        project_id,
+                        "Awaiting human script approval - unverified quote overrides automatic mode",
+                        type_="output",
+                    )
+                else:
+                    _log_event(project_id, "Awaiting human script approval before production begins")
                 return
 
         cancellation.raise_if_cancelled(project_id)
@@ -757,6 +861,8 @@ def _run_retrospective(project_id: int) -> None:
             project = session.get(VideoProject, project_id)
             qa_reports = project.qa_reports or []
             human_edits = project.human_edits or []
+            overridden_findings = project.overridden_findings or []
+            rescue_history = project.rescue_history or []
             content_type_id = project.content_type_id
             script = (project.brief or {}).get("script", "")
             events = session.exec(
@@ -775,6 +881,8 @@ def _run_retrospective(project_id: int) -> None:
             revision_notes_history=revision_notes_history,
             script=script,
             content_type_id=content_type_id,
+            overridden_findings=overridden_findings,
+            rescue_history=rescue_history,
         )
         if not lessons:
             _log_event(project_id, "Retrospective found no actionable lessons for this project")
@@ -809,7 +917,7 @@ def _record_clip_index(project_id: int, final_state: dict) -> None:
     otherwise-successful render, but is still surfaced, not swallowed.
     """
     try:
-        storyboard.record_clips(project_id, final_state.get("materials") or [])
+        storyboard.record_clips(project_id, final_state.get("clip_metadata") or [])
     except Exception as exc:  # noqa: BLE001 - must not fail the render pipeline
         logger.exception(f"project {project_id} clip index recording failed")
         _log_event(project_id, f"Storyboard clip index update failed (render output is unaffected): {exc}", type_="error")
@@ -868,44 +976,75 @@ def _produce_and_review(
         quote_or_lesson=brief.quote_or_lesson,
         research_dossier=dossier,
         prior_scripts=_recent_scripts(content_type_id, exclude_project_id=project_id),
+        content_type_id=content_type_id,
     )
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        prior_reports = list(project.qa_reports or [])
     _append_qa_report(project_id, qa_report)
 
-    if qa_report.overall == "pass":
+    if qa_report.overall in ("pass", "pass_with_warnings"):
         _set_status(project_id, ProjectStatus.QA_PASSED)
         _prepare_publish_package(project_id, brief, video_path, niche)
         _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
-        _log_event(project_id, "QA passed, publish package prepared, awaiting human approval")
+        suffix = " (with warnings)" if qa_report.overall == "pass_with_warnings" else ""
+        _log_event(project_id, f"QA passed{suffix}, publish package prepared, awaiting human approval")
         return
 
-    if qa_report.overall == "fail":
-        _set_status(
+    # overall in ("revise", "fail"): both flow through the SAME automatic
+    # revision loop below - a critical finding isn't necessarily
+    # unresolvable (a re-render can fix a lot of technical criticals), so
+    # FAILED (reserved for actual pipeline exceptions per the incident fix)
+    # is never set from a QA outcome. What differs is only the label
+    # ("fail" vs "revise") and, once escalated, which findings a human can
+    # override at NEEDS_HUMAN_REVIEW.
+    repeated = _repeated_actionable_fingerprints(qa_report, prior_reports)
+    if repeated:
+        _escalate_to_human_review(
             project_id,
-            ProjectStatus.FAILED,
-            failure_reason=f"QA failed: {qa_report.revision_notes or 'unusable output'}",
+            f"the same QA finding recurred after a revision ({', '.join(sorted(repeated))}); "
+            "a revision cannot resolve this",
         )
-        _log_event(project_id, "QA marked the video unusable; escalated", type_="error")
         return
 
-    # overall == "revise", capped at max_revisions automatic loops (across
-    # both revision paths combined) before escalating to a human.
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
         current_revision_count = project.revision_count
 
     if current_revision_count >= _max_revisions():
-        _set_status(
+        _escalate_to_human_review(
             project_id,
-            ProjectStatus.FAILED,
-            failure_reason=(
-                f"QA requested a revision but the limit ({_max_revisions()}) was reached; "
-                "escalated for human review with the QA report attached."
-            ),
+            f"QA requested a revision but the limit ({_max_revisions()}) was reached",
         )
-        _log_event(project_id, "Revision limit reached after QA feedback, escalating", type_="error")
         return
 
     next_revision_count = current_revision_count + 1
+
+    if qa_report.revision_target == "researcher":
+        # Incident fix §4: this finding's fix is evidence, not rewriting - it
+        # never reaches the Creative Director (who can only reword) without
+        # the Researcher trying to actually confirm or refute it first.
+        _set_status(project_id, ProjectStatus.RESEARCHING, revision_count=next_revision_count)
+        _log_event(
+            project_id,
+            f"QA flagged something needing evidence, not a rewrite - asking the Researcher to verify "
+            f"({next_revision_count}/{_max_revisions()}): {qa_report.revision_notes}",
+        )
+        updated_dossier = _run_researcher_supplement(project_id, dossier, qa_report.revision_notes or "")
+        if updated_dossier.reduced_verification and content_type_id in _NEWS_CONTENT_TYPES:
+            _set_status(
+                project_id,
+                ProjectStatus.FAILED,
+                failure_reason=(
+                    "Supplementary research still could not verify this claim from independent sources; "
+                    "refusing to publish an unverified news claim."
+                ),
+            )
+            _log_event(project_id, "Supplementary verification failed for a news claim; hard fail", type_="error")
+            return
+        _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=next_revision_count)
+        _run_pipeline(project_id, topic, niche, qa_report.revision_notes, dossier=updated_dossier)
+        return
 
     if qa_report.revision_target == "producer":
         # A material/visual problem, not a script problem: the script (and
@@ -931,6 +1070,62 @@ def _produce_and_review(
     _run_pipeline(project_id, topic, niche, qa_report.revision_notes, dossier=dossier)
 
 
+def _repeated_actionable_fingerprints(qa_report: QAReport, prior_reports: list) -> set:
+    """
+    Incident fix §4: fingerprints a QA finding by type+subject (e.g.
+    "attribution:tsiolkovsky-quote"); if the SAME actionable (major/critical)
+    fingerprint already showed up in an earlier QA round for this project, a
+    revision already had its shot and didn't fix it - spending another one is
+    guaranteed wasted spend, so this short-circuits straight to
+    NEEDS_HUMAN_REVIEW instead.
+    """
+    current = {f.fingerprint for f in qa_report.findings if f.severity in ("critical", "major")}
+    if not current:
+        return set()
+    prior = {
+        f.get("fingerprint")
+        for report in prior_reports
+        for f in (report.get("findings") or [])
+        if f.get("severity") in ("critical", "major")
+    }
+    return current & prior
+
+
+def _escalate_to_human_review(project_id: int, reason: str) -> None:
+    _set_status(project_id, ProjectStatus.NEEDS_HUMAN_REVIEW, escalation_reason=reason)
+    _log_event(project_id, f"Escalated for human review: {reason}", type_="error")
+
+
+def _merge_supplementary_dossier(original: ResearchDossier, supplement: ResearchDossier) -> ResearchDossier:
+    """
+    Merges a focused Researcher.supplement_verification() pass back into the
+    project's existing dossier - a fresh, narrow re-verification search
+    shouldn't discard unrelated facts/sources the original research already
+    established.
+    """
+    merged = original.model_copy(deep=True)
+    if supplement.verified_quote is not None:
+        merged.verified_quote = supplement.verified_quote
+    if supplement.key_facts:
+        merged.key_facts = merged.key_facts + supplement.key_facts
+    if supplement.sources:
+        merged.sources = merged.sources + supplement.sources
+    if supplement.disputed_points:
+        merged.disputed_points = list(dict.fromkeys(merged.disputed_points + supplement.disputed_points))
+    merged.reduced_verification = original.reduced_verification and supplement.reduced_verification
+    return merged
+
+
+def _run_researcher_supplement(
+    project_id: int, dossier: Optional[ResearchDossier], flagged_item: str
+) -> ResearchDossier:
+    researcher = Researcher(project_id)
+    supplement = researcher.supplement_verification(topic=dossier.topic if dossier else "", flagged_item=flagged_item)
+    merged = _merge_supplementary_dossier(dossier, supplement) if dossier is not None else supplement
+    _store_research_evidence(project_id, merged)
+    return merged
+
+
 def _revise_search_terms(project_id: int, niche: str, brief: CreativeBrief, revision_notes: str) -> CreativeBrief:
     director = CreativeDirector(project_id)
     new_terms = director.revise_search_terms(script=brief.script, niche=niche, revision_notes=revision_notes)
@@ -947,8 +1142,9 @@ def retry_with_revision(project_id: int, revision_notes: str) -> None:
     """
     Reject-with-notes: reruns the Creative Director with feedback and
     re-produces the video. Enforces max_revisions from config.toml - beyond
-    that, the project is left FAILED with a note so a human can take over,
-    per the hard cap on automatic revision loops.
+    that, the project escalates to NEEDS_HUMAN_REVIEW (never FAILED, which
+    is reserved for actual pipeline exceptions) so a human can decide from
+    Final Review with the prior render still preserved and playable.
     """
     with session_scope() as session:
         project = session.get(VideoProject, project_id)
@@ -959,12 +1155,7 @@ def retry_with_revision(project_id: int, revision_notes: str) -> None:
         revision_count = project.revision_count
 
     if revision_count >= _max_revisions():
-        _set_status(
-            project_id,
-            ProjectStatus.FAILED,
-            failure_reason=f"revision limit ({_max_revisions()}) reached; escalated for human review",
-        )
-        _log_event(project_id, "Revision limit reached, escalating to human", type_="error")
+        _escalate_to_human_review(project_id, f"revision limit ({_max_revisions()}) reached")
         return
 
     _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=revision_count + 1)
@@ -973,6 +1164,102 @@ def retry_with_revision(project_id: int, revision_notes: str) -> None:
         target=_run_pipeline, args=(project_id, topic, niche, revision_notes), daemon=True
     )
     thread.start()
+
+
+def _require_needs_human_review(project: Optional[VideoProject], project_id: int) -> None:
+    if project is None:
+        raise ValueError(f"project {project_id} not found")
+    if project.status != ProjectStatus.NEEDS_HUMAN_REVIEW.value:
+        raise PermissionError(f"project {project_id} is not awaiting human review (status={project.status})")
+
+
+_POLICY_OVERRIDE_CATEGORIES = {"content_policy"}
+
+
+def approve_despite_findings(
+    project_id: int, overridden_fingerprints: Optional[List[str]] = None, confirm_policy_risk: bool = False
+) -> None:
+    """
+    NEEDS_HUMAN_REVIEW's "Approve despite findings" action (incident fix
+    §2): records which findings the human chose to override (the learning-
+    loop signal - a repeatedly-overridden finding type is a candidate for the
+    retrospective to propose recalibrating), then hands off into the SAME
+    mandatory AWAITING_HUMAN_APPROVAL -> approve_and_publish gate every other
+    project goes through - this never bypasses that gate, it only resolves
+    the QA escalation blocking the project from reaching it.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_needs_human_review(project, project_id)
+        qa_reports = project.qa_reports or []
+        video_path = project.video_path
+        brief_dict = project.brief
+        niche = project.niche or ""
+
+    if not brief_dict or not video_path:
+        raise RuntimeError(f"project {project_id} has no rendered video/script to approve")
+
+    latest_findings = (qa_reports[-1] or {}).get("findings", []) if qa_reports else []
+    fingerprints = set(overridden_fingerprints or [])
+    overridden = [f for f in latest_findings if f.get("fingerprint") in fingerprints]
+
+    non_overridable = [f for f in overridden if not f.get("overridable", True)]
+    if non_overridable:
+        raise PermissionError(
+            "cannot override hard technical critical finding(s), a re-render is required: "
+            + ", ".join(f.get("fingerprint", "") for f in non_overridable)
+        )
+
+    policy_findings = [f for f in overridden if f.get("category") in _POLICY_OVERRIDE_CATEGORIES]
+    if policy_findings and not confirm_policy_risk:
+        raise PermissionError(
+            "overriding a content-policy finding requires explicit confirm_policy_risk=True (this may risk "
+            "platform strikes)"
+        )
+
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        history = list(project.overridden_findings or [])
+        history.append({"at": utcnow().isoformat(), "fingerprints": sorted(fingerprints), "findings": overridden})
+        project.overridden_findings = history
+        project.escalation_reason = None
+        session.add(project)
+        session.commit()
+
+    brief = CreativeBrief.model_validate(brief_dict)
+    _prepare_publish_package(project_id, brief, video_path, niche)
+    _set_status(project_id, ProjectStatus.AWAITING_HUMAN_APPROVAL)
+    _log_event(project_id, f"Human approved despite {len(overridden)} outstanding QA finding(s); awaiting final approval")
+
+
+def request_changes_from_review(project_id: int, notes: str) -> None:
+    """
+    NEEDS_HUMAN_REVIEW's "Request Changes" action: a fresh revision budget
+    (the automatic loop already spent its share getting here) plus the
+    human's own notes, re-entering production the same way a QA "revise"
+    verdict would.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_needs_human_review(project, project_id)
+        topic = project.topic
+        niche = project.niche or ""
+
+    _set_status(project_id, ProjectStatus.SCRIPTING, revision_count=0, escalation_reason=None)
+    _log_event(project_id, f"Human requested changes from escalated review (fresh revision budget): {notes}")
+    thread = threading.Thread(target=_run_pipeline, args=(project_id, topic, niche, notes), daemon=True)
+    thread.start()
+
+
+def reject_from_review(project_id: int, notes: str = "") -> None:
+    """NEEDS_HUMAN_REVIEW's "Reject project" action - terminal, but the render/script stay on disk under the project's storage folder, never deleted."""
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        _require_needs_human_review(project, project_id)
+
+    _set_status(project_id, ProjectStatus.REJECTED, escalation_reason=None)
+    suffix = f": {notes}" if notes else ""
+    _log_event(project_id, f"Project rejected at human review{suffix}")
 
 
 def _require_awaiting_script_approval(project: Optional[VideoProject], project_id: int) -> None:
@@ -1272,6 +1559,88 @@ def retry_failed_project(project_id: int) -> None:
     _log_event(project_id, "Retrying after failure")
     thread = threading.Thread(target=_run_pipeline, args=(project_id, topic or "", niche), daemon=True)
     thread.start()
+
+
+def rescue_failed_project(project_id: int, candidate_id: Optional[str] = None) -> dict:
+    """
+    Manual override for a Failed project whose final render actually exists
+    and is technically sound (app/services/rescue.py) - moves it into the
+    normal human-review flow (NEEDS_HUMAN_REVIEW) instead of forcing a
+    re-render. Two cases this covers now that QA findings route to
+    NEEDS_HUMAN_REVIEW instead of Failed: legacy projects marked Failed
+    under the old pre-redesign logic, and pipeline-error failures where a
+    post-render step (thumbnail generation, storyboard update, publish-prep)
+    crashed after a good final-video.mp4 was already written.
+
+    Never automatic - only ever called from an explicit human action.
+    `candidate_id` picks a specific render from rescue.list_render_candidates
+    (defaults to the newest technically-valid one). The technical re-check
+    always runs fresh here, never trusting any cached rescue_eligible flag -
+    a stale "eligible" badge can never sneak a silent/corrupt video into the
+    approval queue.
+
+    From review onward this is a completely normal project: no gate is
+    skipped, nothing is pre-approved. The status check below (project must
+    currently be exactly FAILED) is also the race guard against a
+    concurrent retry - retry_failed_project moves status off FAILED before
+    its background thread starts any work, so a project mid-retry is never
+    FAILED at the moment this reads it.
+    """
+    with session_scope() as session:
+        project = session.get(VideoProject, project_id)
+        if project is None:
+            raise ValueError(f"project {project_id} not found")
+        if project.status != ProjectStatus.FAILED.value:
+            raise PermissionError(
+                f"project {project_id} is not FAILED (status={project.status}); nothing to rescue "
+                "(if a retry is already in progress, wait for it to finish or fail again)"
+            )
+
+        eligibility = rescue.evaluate_rescuability(project)
+        if not eligibility.eligible:
+            raise PermissionError(f"project {project_id} has no usable render to rescue: {eligibility.reason}")
+
+        chosen = next((c for c in eligibility.candidates if c.id == candidate_id), None) if candidate_id else eligibility.best
+        if chosen is None:
+            raise ValueError(
+                f"project {project_id}: {candidate_id!r} is not one of the currently valid render candidates"
+            )
+
+        original_failure_reason = project.failure_reason
+        script_edit_warning = rescue.has_script_edit(project)
+
+        history = list(project.rescue_history or [])
+        history.append(
+            {
+                "at": utcnow().isoformat(),
+                "from_status": ProjectStatus.FAILED.value,
+                "to_status": ProjectStatus.NEEDS_HUMAN_REVIEW.value,
+                "failure_reason": original_failure_reason,
+                "video_path": chosen.video_path,
+                "video_label": chosen.label,
+                "script_edit_warning": script_edit_warning,
+            }
+        )
+        project.rescue_history = history
+        project.video_path = chosen.video_path
+        project.status = ProjectStatus.NEEDS_HUMAN_REVIEW.value
+        banner = f"This project was marked Failed: {original_failure_reason or 'no reason recorded'} - overridden by you on {utcnow().date().isoformat()}."
+        if script_edit_warning:
+            banner += " Note: the script was edited after this project was created - verify the render still matches."
+        project.escalation_reason = banner
+        project.failure_reason = None
+        project.rescue_eligible = None  # no longer Failed; the badge no longer applies
+        project.rescue_checked_at = None
+        project.rescue_ineligible_reason = None
+        session.add(project)
+        session.commit()
+
+    broadcast_status(project_id, ProjectStatus.NEEDS_HUMAN_REVIEW.value)
+    _log_event(
+        project_id,
+        f"Rescued from Failed ({original_failure_reason or 'no reason recorded'}) using {chosen.label} - sent to human review",
+    )
+    return {"project_id": project_id, "status": ProjectStatus.NEEDS_HUMAN_REVIEW.value, "video_path": chosen.video_path}
 
 
 def resume_incomplete_projects() -> None:

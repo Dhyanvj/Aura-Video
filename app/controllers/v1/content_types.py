@@ -26,12 +26,16 @@ class UpdateContentTypeRequest(BaseModel):
     freshness_window_hours: Optional[int] = None
     series_capable: Optional[bool] = None
     default_quality_preset: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
 @router.get("/content-types", summary="List content-type templates (New Video cards)")
-def list_content_types(request: Request):
+def list_content_types(request: Request, enabled_only: bool = False):
     with session_scope() as session:
-        templates = session.exec(select(ContentTypeTemplate).order_by(ContentTypeTemplate.label)).all()
+        query = select(ContentTypeTemplate).order_by(ContentTypeTemplate.label)
+        if enabled_only:
+            query = query.where(ContentTypeTemplate.enabled == True)  # noqa: E712
+        templates = session.exec(query).all()
         data = [_template_summary(t) for t in templates]
     return utils.get_response(200, {"content_types": data})
 
@@ -69,4 +73,5 @@ def _template_summary(template: ContentTypeTemplate) -> dict:
         "freshness_window_hours": template.freshness_window_hours,
         "series_capable": template.series_capable,
         "default_quality_preset": template.default_quality_preset,
+        "enabled": template.enabled,
     }

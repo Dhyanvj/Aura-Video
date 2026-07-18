@@ -2,7 +2,7 @@
 Storage v2 (docs/DECISIONS_V3.md §1): a human-browsable folder per project at
 storage/projects/{content-type}/{YYYY-MM-DD}-{slug}-{shortid}/, containing
 script.md, transcript.txt, voice.mp3, subtitles.srt, final-video.mp4,
-thumbnail.png (+ candidates/), title.txt/description.txt/tags.json,
+thumbnail.jpg (+ candidates/), title.txt/description.txt/tags.json,
 research.md, project.json, and revisions/ (prior renders, never deleted).
 
 The folder path is stable for a project's life once assigned - status lives
@@ -36,7 +36,7 @@ _CANONICAL_FILES = (
     "voice.mp3",
     "subtitles.srt",
     "final-video.mp4",
-    "thumbnail.png",
+    "thumbnail.jpg",
     "title.txt",
     "description.txt",
     "tags.json",
@@ -300,7 +300,7 @@ def materialize_project(project_id: int) -> Optional[str]:
         if thumbnails:
             candidates_dir = os.path.join(abs_dir, "candidates")
             os.makedirs(candidates_dir, exist_ok=True)
-            _copy_if_exists(thumbnails[0], os.path.join(abs_dir, "thumbnail.png"))
+            _copy_if_exists(thumbnails[0], os.path.join(abs_dir, "thumbnail.jpg"))
             for extra in thumbnails[1:]:
                 shutil.copy2(extra, os.path.join(candidates_dir, os.path.basename(extra)))
 

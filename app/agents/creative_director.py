@@ -122,7 +122,7 @@ _CONTENT_TYPE_ADDENDA = {
 # Content types where quote_or_lesson must be populated on the brief - a
 # missing centerpiece means the on-screen treatment (the whole point of the
 # content type) can't be rendered.
-_REQUIRES_QUOTE_OR_LESSON = {"motivational"}
+REQUIRES_QUOTE_OR_LESSON = {"motivational"}
 
 
 class CreativeDirector(BaseAgent):
@@ -137,6 +137,7 @@ class CreativeDirector(BaseAgent):
         research_dossier: Optional[ResearchDossier] = None,
         recent_hook_patterns: Optional[List[str]] = None,
         playbook_bullets: Optional[List[str]] = None,
+        voice_style: Optional[str] = None,
     ) -> CreativeBrief:
         payload = {
             "topic": topic,
@@ -148,6 +149,12 @@ class CreativeDirector(BaseAgent):
         addendum = _CONTENT_TYPE_ADDENDA.get(content_type_id)
         if addendum:
             system += f"\n\n{addendum}"
+        if voice_style:
+            system += (
+                f"\n\nThis content type's voice should sound: {voice_style}. Choose the entry from "
+                "available_voices that best fits this feel - still copy it verbatim, never write a "
+                "description instead of a real voice ID."
+            )
         if recent_hook_patterns:
             system += _HOOK_VARIETY_INSTRUCTION.format(
                 count=len(recent_hook_patterns), patterns=", ".join(recent_hook_patterns)
@@ -181,7 +188,7 @@ class CreativeDirector(BaseAgent):
 
         brief = self.call_json(system=system, user=utils.to_json(payload), response_model=CreativeBrief)
 
-        if content_type_id in _REQUIRES_QUOTE_OR_LESSON and brief.quote_or_lesson is None:
+        if content_type_id in REQUIRES_QUOTE_OR_LESSON and brief.quote_or_lesson is None:
             raise ValueError(
                 f"Creative Director did not populate quote_or_lesson for content type "
                 f"{content_type_id!r}, which requires an on-screen quote/lesson centerpiece"

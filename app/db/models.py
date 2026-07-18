@@ -29,6 +29,14 @@ class ProjectStatus(str, Enum):
     RENDERED = "RENDERED"
     QA_REVIEW = "QA_REVIEW"
     QA_PASSED = "QA_PASSED"
+    # QA escalation (incident fix, docs/DECISIONS_V3.md follow-up): reached
+    # when the automatic revision budget is exhausted, or a QA finding
+    # recurs with the same fingerprint across rounds (a revision cannot
+    # resolve it) - never FAILED, which is reserved for actual pipeline
+    # exceptions. The rendered video is preserved and playable; a human
+    # resolves it via approve_despite_findings / request_changes_from_review
+    # / reject_from_review (app/agents/orchestrator.py).
+    NEEDS_HUMAN_REVIEW = "NEEDS_HUMAN_REVIEW"
     AWAITING_HUMAN_APPROVAL = "AWAITING_HUMAN_APPROVAL"
     APPROVED = "APPROVED"
     PUBLISHING = "PUBLISHING"
@@ -119,6 +127,41 @@ class VideoProject(SQLModel, table=True):
     status_before_delete: Optional[str] = None
     cancel_requested: bool = Field(default=False)
 
+    # QA escalation (incident fix). escalation_reason is a short human-
+    # readable string set when entering NEEDS_HUMAN_REVIEW (revision limit
+    # reached, or a repeated-fingerprint short-circuit) - distinct from
+    # failure_reason, which stays reserved for actual pipeline exceptions.
+    escalation_reason: Optional[str] = None
+    # {"at": iso timestamp, "fingerprints": [...], "findings": [Finding.model_dump(), ...]}
+    # entries, one per approve_despite_findings() call - the learning-loop
+    # signal for "which QA findings did the human decide were fine to ship
+    # anyway" (docs incident fix §2).
+    overridden_findings: Optional[list] = Field(default=None, sa_column=Column(JSON))
+    # Set at the script-approval gate when a quote/lesson centerpiece could
+    # not be verified against the Researcher's dossier even after one free
+    # rewrite attempt (docs incident fix §3) - surfaced to the human before
+    # they approve the script, since a render hasn't happened yet and fixing
+    # it here costs nothing. Cleared once a script's quote verifies cleanly.
+    script_verification_warning: Optional[str] = None
+
+    # Failed-project rescue (manual override, see app/services/rescue.py):
+    # cached result of the last rescuability check, so the Failed list/card
+    # can show a badge without re-running ffprobe on every page load. This
+    # cache is NEVER trusted as the authorization decision for the actual
+    # override - orchestrator.rescue_failed_project always re-checks fresh
+    # at override time. None means "never checked."
+    rescue_eligible: Optional[bool] = None
+    rescue_checked_at: Optional[datetime] = None
+    rescue_ineligible_reason: Optional[str] = None
+    rescue_candidate_path: Optional[str] = None
+    rescue_candidate_label: Optional[str] = None
+    # [{"at", "from_status", "to_status", "failure_reason", "video_path",
+    # "video_label", "script_edit_warning"}, ...] - one entry per successful
+    # override, never erased. Feeds the retrospective learning loop the same
+    # way overridden_findings does (a repeatedly-rescued failure type is a
+    # signal the failure classification needs recalibrating).
+    rescue_history: Optional[list] = Field(default=None, sa_column=Column(JSON))
+
 
 class Series(SQLModel, table=True):
     """
@@ -168,6 +211,11 @@ class ContentTypeTemplate(SQLModel, table=True):
     freshness_window_hours: Optional[int] = None
     series_capable: bool = False
     default_quality_preset: str = "standard"  # budget | standard | cinematic
+    # Focus decision (motivational-only pivot): disabled types are hidden from
+    # the New Video flow, Trend Scout, and the scheduler, but never deleted -
+    # existing projects of that type stay viewable, and Settings can flip
+    # this back on with no code change.
+    enabled: bool = Field(default=True)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

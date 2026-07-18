@@ -1,4 +1,5 @@
 
+import json
 import unittest
 import os
 import shutil
@@ -181,6 +182,48 @@ class TestVideoService(unittest.TestCase):
         """
         with tempfile.NamedTemporaryFile(suffix=".mp3") as temp_bgm:
             self.assertEqual(vd.get_bgm_file(bgm_file=temp_bgm.name), "")
+
+    def test_get_bgm_file_with_palette_filters_to_tagged_tracks(self):
+        """
+        BGM 曲库按 content type 的 music_palette 打了标签 (scripts/classify_bgm.py
+        生成的 catalog.json)；随机选曲时应只从匹配该 palette 的曲目中选，而不是
+        整个曲库，不同内容类型的背景音乐才会真正听起来不一样。
+        """
+        with tempfile.TemporaryDirectory() as tmp_song_dir:
+            for name in ("a.mp3", "b.mp3", "c.mp3"):
+                Path(os.path.join(tmp_song_dir, name)).write_bytes(b"fake-mp3")
+            catalog = {
+                "a.mp3": {"palette": "tech_energetic"},
+                "b.mp3": {"palette": "cinematic_uplifting"},
+                "c.mp3": {"palette": "cinematic_uplifting"},
+            }
+            with open(os.path.join(tmp_song_dir, "catalog.json"), "w") as fh:
+                json.dump(catalog, fh)
+
+            vd._load_bgm_catalog.cache_clear()
+            try:
+                with patch.object(vd.utils, "song_dir", return_value=tmp_song_dir):
+                    for _ in range(5):
+                        result = vd.get_bgm_file(bgm_type="random", palette="cinematic_uplifting")
+                        self.assertIn(os.path.basename(result), ("b.mp3", "c.mp3"))
+            finally:
+                vd._load_bgm_catalog.cache_clear()
+
+    def test_get_bgm_file_with_unmatched_palette_falls_back_to_full_pool(self):
+        """
+        某个 palette 在曲库里暂时没有任何曲目（或 catalog.json 缺失/损坏）时，
+        必须回退到完整曲库随机选择，绝不能因为没有匹配项就导致渲染失败。
+        """
+        with tempfile.TemporaryDirectory() as tmp_song_dir:
+            Path(os.path.join(tmp_song_dir, "only.mp3")).write_bytes(b"fake-mp3")
+
+            vd._load_bgm_catalog.cache_clear()
+            try:
+                with patch.object(vd.utils, "song_dir", return_value=tmp_song_dir):
+                    result = vd.get_bgm_file(bgm_type="random", palette="nonexistent_palette")
+                    self.assertEqual(os.path.basename(result), "only.mp3")
+            finally:
+                vd._load_bgm_catalog.cache_clear()
 
     # storage v2 (docs/DECISIONS_V3.md §1) reuses this exact primitive to
     # guard storage/projects/{content-type}/{folder}/ - same guarantees must
